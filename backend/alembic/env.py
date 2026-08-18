@@ -1,11 +1,12 @@
 from logging.config import fileConfig
 from sqlalchemy import engine_from_config, pool
 from alembic import context
-from app.core.config import settings
+import os
 
 config = context.config
 
-sync_url = settings.DATABASE_URL.replace("+asyncpg", "")
+db_url = os.environ.get("DATABASE_URL", "")
+sync_url = db_url.replace("+asyncpg", "").replace("postgresql+asyncpg", "postgresql")
 config.set_main_option("sqlalchemy.url", sync_url)
 
 if config.config_file_name is not None:
