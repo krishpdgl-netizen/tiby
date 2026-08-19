@@ -2,548 +2,298 @@ import { useState, useRef } from 'react'
 import { transcribeVoice } from '../services/api'
 import { useSpeech } from '../hooks/useSpeech'
 
-const APPS_SCRIPT_URL = import.meta.env.VITE_APPS_SCRIPT_URL || ""
-const API_URL = import.meta.env.VITE_API_URL || "https://tiby.onrender.com/api/v1"
-
-const DOT  = { idle: 'idle', active: 'active', done: 'done', warn: 'warn' }
-const STEP = { CARD: 0, VOICE: 1, DRAFT: 2, SENT: 3 }
-const MAX_IMG = 1024  // max px before resize
+const APPS_SCRIPT_URL = import.meta.env.VITE_APPS_SCRIPT_URL || ''
+const API_URL = import.meta.env.VITE_API_URL || 'https://tiby.onrender.com/api/v1'
+const STEP = { SCAN: 0, VOICE: 1, DRAFT: 2, SENT: 3 }
 
 export default function CardScannerPage() {
-  const [step, setStep]                   = useState(STEP.CARD)
-  const [cardArmed, setCardArmed]         = useState(false)
-  const [cardDot, setCardDot]             = useState(DOT.idle)
-  const [cardStatus, setCardStatus]       = useState('Ready to scan')
-  const [extracted, setExtracted]         = useState({})
-  const [driveUrl, setDriveUrl]           = useState(null)
-  const [savedContact, setSavedContact]   = useState(null)
-  const [loading, setLoading]             = useState(false)
-  const [recording, setRecording]         = useState(false)
-  const [voiceInstruction, setVoiceInstruction] = useState('')
-  const [draft, setDraft]                 = useState(null)
-  const [sending, setSending]             = useState(false)
-  const [sendResult, setSendResult]       = useState(null)
+  const [step, setStep]               = useState(STEP.SCAN)
+  const [armed, setArmed]             = useState(false)
+  const [dot, setDot]                 = useState('idle')
+  const [status, setStatus]           = useState('Ready to scan')
+  const [preview, setPreview]         = useState(null)
+  const [extracted, setExtracted]     = useState({})
+  const [driveUrl, setDriveUrl]       = useState(null)
+  const [contact, setContact]         = useState(null)
+  const [loading, setLoading]         = useState(false)
+  const [recording, setRecording]     = useState(false)
+  const [instruction, setInstruction] = useState('')
+  const [draft, setDraft]             = useState(null)
+  const [sending, setSending]         = useState(false)
+  const [sendResult, setSendResult]   = useState(null)
 
-  const videoRef   = useRef()
-  const previewRef = useRef()
-  const streamRef  = useRef()
-  const mrRef      = useRef()
-  const chunksRef  = useRef([])
-
+  const videoRef  = useRef(); const streamRef = useRef()
+  const mrRef     = useRef(); const chunksRef = useRef([])
   const { speak, stop, isSpeaking } = useSpeech()
 
-  // ── blob → base64 ──────────────────────────────────────────────────────────
-  function blobToBase64(blob) {
-    return new Promise((res, rej) => {
-      const r = new FileReader()
-      r.onload  = () => res(r.result.split(',')[1])
-      r.onerror = rej
-      r.readAsDataURL(blob)
-    })
+  function b64(blob) {
+    return new Promise((res,rej) => { const r=new FileReader(); r.onload=()=>res(r.result.split(',')[1]); r.onerror=rej; r.readAsDataURL(blob) })
   }
-
-  // ── resize + compress canvas to blob ───────────────────────────────────────
-  function resizeAndCompress(sourceCanvas) {
+  function resize(canvas, max=640) {
     return new Promise(resolve => {
-      const scale = Math.min(MAX_IMG / sourceCanvas.width, MAX_IMG / sourceCanvas.height, 1)
-      const out   = document.createElement('canvas')
-      out.width   = Math.round(sourceCanvas.width  * scale)
-      out.height  = Math.round(sourceCanvas.height * scale)
-      out.getContext('2d').drawImage(sourceCanvas, 0, 0, out.width, out.height)
-      out.toBlob(resolve, 'image/jpeg', 0.72)
+      const s = Math.min(max/canvas.width, max/canvas.height, 1)
+      const out = document.createElement('canvas')
+      out.width=Math.round(canvas.width*s); out.height=Math.round(canvas.height*s)
+      out.getContext('2d').drawImage(canvas,0,0,out.width,out.height)
+      out.toBlob(resolve,'image/jpeg',0.72)
     })
   }
 
-  // ── CARD: open rear camera ─────────────────────────────────────────────────
-  async function handleScanBtn() {
-    if (!cardArmed) {
+  async function handleScan() {
+    if (!armed) {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 960 } }
-        })
-        streamRef.current         = stream
-        videoRef.current.srcObject = stream
-        videoRef.current.style.display = 'block'
-        previewRef.current.style.display = 'none'
-        setCardArmed(true)
-      } catch {
-        showToast('Camera access denied.', 'error')
-      }
+        const stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:'environment' } })
+        streamRef.current = stream; videoRef.current.srcObject = stream
+        videoRef.current.style.display = 'block'; setArmed(true)
+      } catch { toast('Camera access denied','error') }
       return
     }
-
-    // Snap frame from video
     const cv = document.createElement('canvas')
-    cv.width  = videoRef.current.videoWidth
-    cv.height = videoRef.current.videoHeight
-    cv.getContext('2d').drawImage(videoRef.current, 0, 0)
-
-    // Stop camera immediately so user sees preview fast
-    streamRef.current?.getTracks().forEach(t => t.stop())
-    setCardArmed(false)
-
-    // Resize + compress
-    const blob = await resizeAndCompress(cv)
-    previewRef.current.src = URL.createObjectURL(blob)
-    previewRef.current.style.display = 'block'
-    videoRef.current.style.display   = 'none'
-
-    setCardDot(DOT.active)
-    setCardStatus('Reading card…')
-
+    cv.width=videoRef.current.videoWidth; cv.height=videoRef.current.videoHeight
+    cv.getContext('2d').drawImage(videoRef.current,0,0)
+    streamRef.current?.getTracks().forEach(t=>t.stop())
+    videoRef.current.style.display='none'; setArmed(false)
+    const blob = await resize(cv)
+    setPreview(URL.createObjectURL(blob))
+    setDot('active'); setStatus('Reading card…')
     try {
-      const b64 = await blobToBase64(blob)
-      const res  = await fetch(APPS_SCRIPT_URL, {
-        method: 'POST',
-        body: JSON.stringify({
-          image_base64:   b64,
-          image_mime:     'image/jpeg',
-          image_filename: 'card.jpg',
-        }),
-      })
+      const enc = await b64(blob)
+      const res = await fetch(APPS_SCRIPT_URL,{ method:'POST', body:JSON.stringify({ image_base64:enc, image_mime:'image/jpeg', image_filename:'card.jpg' }) })
       const data = await res.json()
-
-      if (data.status === 'success') {
-        const fields = data.fields || {}
-        setExtracted(fields)
-        setDriveUrl(data.drive_url)
-        const count = Object.values(fields).filter(Boolean).length
-        setCardDot(DOT.done)
-        setCardStatus(count
-          ? `${count} detail${count > 1 ? 's' : ''} extracted — verify below`
-          : 'Card saved — text not readable')
-      } else {
-        setCardDot(DOT.warn)
-        setCardStatus('Card saved — could not extract text')
-      }
-    } catch {
-      setCardDot(DOT.warn)
-      setCardStatus('Saved offline — will retry when online')
-    }
+      if (data.status==='success') {
+        setExtracted(data.fields||{}); setDriveUrl(data.drive_url)
+        const n = Object.values(data.fields||{}).filter(Boolean).length
+        setDot('done'); setStatus(n ? `${n} detail${n>1?'s':''} extracted — verify below` : 'Card saved — verify details')
+      } else { throw new Error(data.message) }
+    } catch { setDot('warn'); setStatus('Could not extract — enter details manually') }
   }
 
-  // ── Confirm → move to voice ────────────────────────────────────────────────
-  function handleConfirm() {
-    setSavedContact({ ...extracted, drive_url: driveUrl })
-    setStep(STEP.VOICE)
-  }
+  function handleConfirm() { setContact({...extracted, drive_url:driveUrl}); setStep(STEP.VOICE) }
 
-  // ── VOICE: hold to record ──────────────────────────────────────────────────
-  async function startRecording() {
+  async function startRec() {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      chunksRef.current = []
-      const mr = new MediaRecorder(stream)
-      mrRef.current = mr
-      mr.ondataavailable = e => chunksRef.current.push(e.data)
-      mr.onstop = async () => {
-        stream.getTracks().forEach(t => t.stop())
-        const blob = new Blob(chunksRef.current, { type: 'audio/webm' })
+      const stream = await navigator.mediaDevices.getUserMedia({audio:true})
+      chunksRef.current=[]
+      const mr = new MediaRecorder(stream); mrRef.current=mr
+      mr.ondataavailable=e=>chunksRef.current.push(e.data)
+      mr.onstop=async()=>{
+        stream.getTracks().forEach(t=>t.stop())
+        const blob=new Blob(chunksRef.current,{type:'audio/webm'})
         setLoading(true)
-        try {
-          const { data } = await transcribeVoice(blob)
-          setVoiceInstruction(data.transcript || '')
-        } catch {
-          showToast('Could not transcribe — type instead', 'warn')
-        } finally {
-          setLoading(false)
-        }
+        try { const {data}=await transcribeVoice(blob); setInstruction(data.transcript||'') }
+        catch { toast('Could not transcribe','error') }
+        finally { setLoading(false) }
       }
-      mr.start()
-      setRecording(true)
-    } catch {
-      showToast('Microphone access denied.', 'error')
-    }
+      mr.start(); setRecording(true)
+    } catch { toast('Microphone access denied','error') }
   }
+  function stopRec() { mrRef.current?.stop(); setRecording(false) }
 
-  function stopRecording() {
-    mrRef.current?.stop()
-    setRecording(false)
-  }
-
-  // ── Draft email ────────────────────────────────────────────────────────────
   async function handleDraft() {
-    if (!voiceInstruction.trim()) return showToast('Tell me what to write first', 'error')
+    if (!instruction.trim()) return toast('Tell me what to write first','error')
     setLoading(true)
     try {
-      // Draft via Apps Script — no CORS issues, same Gemini key
-      const res = await fetch(APPS_SCRIPT_URL, {
-        method: 'POST',
-        body: JSON.stringify({
-          action: 'draft-email',
-          contact: savedContact,
-          voice_instruction: voiceInstruction,
-        }),
-      })
+      const res = await fetch(APPS_SCRIPT_URL,{method:'POST',body:JSON.stringify({action:'draft-email',contact,voice_instruction:instruction})})
       const data = await res.json()
-      if (data.status !== 'success') throw new Error(data.message)
-      setDraft(data)
-      setStep(STEP.DRAFT)
-      // Speak the draft using browser TTS
-      const speakText = `Subject: ${data.subject}. ${data.body}`.slice(0, 800)
-      setTimeout(() => speak(speakText), 400)
-    } catch {
-      showToast('Failed to draft email', 'error')
-    } finally {
-      setLoading(false)
-    }
+      if (data.status!=='success') throw new Error(data.message)
+      setDraft(data); setStep(STEP.DRAFT)
+      setTimeout(()=>speak(`Subject: ${data.subject}. ${data.body}`.slice(0,600)),400)
+    } catch { toast('Failed to draft email','error') }
+    finally { setLoading(false) }
   }
 
-  // ── Send ───────────────────────────────────────────────────────────────────
   async function handleSend() {
-    stop()
-    setSending(true)
+    stop(); setSending(true)
     try {
-      const res = await fetch(`${API_URL}/emails/send-quick`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          to_email: savedContact.email,
-          subject:  draft.subject,
-          body:     draft.body,
-        }),
-      })
+      const res = await fetch(`${API_URL}/emails/send-quick`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to_email:contact.email,subject:draft.subject,body:draft.body})})
       const data = await res.json()
-      setSendResult(data)
-      setStep(STEP.SENT)
-    } catch {
-      showToast('Failed to send', 'error')
-    } finally {
-      setSending(false)
-    }
+      setSendResult(data); setStep(STEP.SENT)
+    } catch { toast('Failed to send','error') }
+    finally { setSending(false) }
   }
 
-  // ── Reset ──────────────────────────────────────────────────────────────────
   function reset() {
-    stop()
-    streamRef.current?.getTracks().forEach(t => t.stop())
-    setStep(STEP.CARD); setCardArmed(false)
-    setCardDot(DOT.idle); setCardStatus('Ready to scan')
-    setExtracted({}); setDriveUrl(null); setSavedContact(null)
-    setVoiceInstruction(''); setDraft(null); setSendResult(null)
-    if (videoRef.current)   { videoRef.current.style.display   = 'none'; videoRef.current.srcObject = null }
-    if (previewRef.current) { previewRef.current.style.display = 'none'; previewRef.current.removeAttribute('src') }
+    stop(); streamRef.current?.getTracks().forEach(t=>t.stop())
+    setStep(STEP.SCAN); setArmed(false); setDot('idle'); setStatus('Ready to scan')
+    setPreview(null); setExtracted({}); setDriveUrl(null); setContact(null)
+    setInstruction(''); setDraft(null); setSendResult(null)
+    if(videoRef.current){videoRef.current.style.display='none';videoRef.current.srcObject=null}
   }
 
-  const hasExtracted = Object.values(extracted).some(Boolean)
+  const hasFields = Object.values(extracted).some(Boolean)
 
   return (
-    <div className="wrap">
+    <div className="t-content" style={{ paddingTop: 16 }}>
 
-      {/* ── Stepper ── */}
-      <div className="stepper">
-        {['Card', 'Email', 'Done'].map((name, i) => (
-          <div key={i} className={`step ${step > i ? 'done' : step === i ? 'active' : ''}`}>
-            <div className="step-node">{step > i ? '✓' : i + 1}</div>
-            <div className="step-name">{name}</div>
-          </div>
-        ))}
+      {/* Step bar */}
+      <div>
+        <div className="t-steps">
+          {['Scan','Email','Done'].map((_,i)=>(
+            <div key={i} className="t-step-bar" style={{ background: step>i?'#1a1a1a':step===i?'#6b7280':'#e5e5e4' }} />
+          ))}
+        </div>
+        <div className="t-step-labels">
+          {['Scan','Email','Done'].map((l,i)=>(
+            <span key={i} className={step===i?'t-step-active':''}>{l}</span>
+          ))}
+        </div>
       </div>
 
-      {/* ── STEP 0: CARD ── */}
-      {step === STEP.CARD && (
-        <div className={`lcs-card ${cardDot === DOT.done ? 'is-done' : 'is-active'}`}>
-          <div className="card-head">
-            <div className="card-icon">
-              <svg viewBox="0 0 20 14" fill="none" width="20" height="14">
-                <rect x="1" y="1" width="18" height="12" rx="2" stroke="#3E7BFA" strokeWidth="1.5"/>
-                <rect x="1" y="4.5" width="18" height="2.5" fill="#3E7BFA" opacity=".4"/>
-                <rect x="3.5" y="8.5" width="5" height="1.5" rx=".75" fill="#3E7BFA"/>
-              </svg>
-            </div>
-            <div>
-              <div className="card-title">Visiting Card</div>
-              <div className="card-sub">Scan to extract contact details</div>
-            </div>
+      {/* ── SCAN ── */}
+      {step===STEP.SCAN && (
+        <div className="t-card">
+          <div className="t-card-head">
+            <div className="t-icon ti-amber"><i className="ti ti-id" aria-hidden="true"/></div>
+            <div><div className="t-ct">Visiting card</div><div className="t-cs">Scan to extract contact details</div></div>
           </div>
 
-          {/* Camera / preview */}
-          <video ref={videoRef} autoPlay playsInline muted style={{
-            display: 'none', width: '100%', borderRadius: 12,
-            marginBottom: 12, background: '#000', aspectRatio: '4/3', objectFit: 'cover'
-          }} />
-          <img ref={previewRef} alt="Card" style={{
-            display: 'none', width: '100%', borderRadius: 12,
-            marginBottom: 12, aspectRatio: '4/3', objectFit: 'cover'
-          }} />
-
-          <button
-            className={`btn ${cardDot === DOT.done ? 'btn-done' : 'btn-scan'}`}
-            onClick={handleScanBtn}
-          >
-            {cardArmed ? '📸 Snap Card' : cardDot === DOT.done ? 'Rescan Card' : 'Scan Visiting Card'}
-          </button>
-
-          <div className="status-row">
-            <span className={`dot ${cardDot}`} />
-            <span>{cardStatus}</span>
-            {driveUrl && (
-              <a href={driveUrl} target="_blank" rel="noreferrer"
-                style={{ marginLeft: 'auto', fontSize: 11, color: '#3E7BFA', textDecoration: 'none' }}>
-                View in Drive ↗
-              </a>
+          <div className="t-camera-preview" style={{ display: preview||armed ? 'block':'flex' }}>
+            <video ref={videoRef} autoPlay playsInline muted style={{ display:'none',width:'100%',height:'100%',objectFit:'cover',borderRadius:12 }} />
+            {preview && <img src={preview} style={{ width:'100%',height:'100%',objectFit:'cover',borderRadius:12 }} alt="Card" />}
+            {!preview && !armed && (
+              <>
+                <i className="ti ti-id" style={{ fontSize:40,color:'#d1d5db' }} aria-hidden="true"/>
+                <span style={{ fontSize:13,color:'#9ca3af',marginTop:6 }}>Camera preview</span>
+              </>
             )}
           </div>
 
-          {/* Editable extracted fields */}
-          {hasExtracted && (
-            <div className="extracted show">
-              <div className="extracted-head">Extracted Details</div>
-              {[
-                ['Name', 'name'], ['Role', 'role'], ['Email', 'email'],
-                ['Phone', 'phone'], ['Company', 'company'], ['Website', 'website']
-              ].map(([label, key]) => extracted[key] ? (
-                <div key={key} className="ef-row">
-                  <span className="ef-key">{label}</span>
-                  <span className="ef-val">
-                    <input
-                      defaultValue={extracted[key]}
-                      onChange={e => setExtracted(p => ({ ...p, [key]: e.target.value }))}
-                      style={{
-                        border: 'none', background: 'transparent', color: 'inherit',
-                        width: '100%', fontSize: 13, padding: 0, fontFamily: 'inherit'
-                      }}
-                    />
-                  </span>
-                </div>
-              ) : null)}
-            </div>
-          )}
-
-          {hasExtracted && (
-            <button className="btn btn-submit" style={{ marginTop: 14 }} onClick={handleConfirm}>
-              Save &amp; Write Email →
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* ── STEP 1: VOICE ── */}
-      {step === STEP.VOICE && savedContact && (
-        <div className="lcs-card is-active">
-          <div className="card-head">
-            <div className="card-icon" style={{ background: '#E6F7EF' }}>
-              <svg viewBox="0 0 24 24" fill="none" width="22" height="22">
-                <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z" stroke="#2FA36B" strokeWidth="1.5"/>
-                <path d="M19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8" stroke="#2FA36B" strokeWidth="1.5" strokeLinecap="round"/>
-              </svg>
-            </div>
-            <div>
-              <div className="card-title">What should the email say?</div>
-              <div className="card-sub">To {savedContact.name || savedContact.email || 'contact'}</div>
-            </div>
-          </div>
-
-          <button
-            className={`btn ${recording ? 'btn-stop' : 'btn-record'}`}
-            onMouseDown={startRecording} onMouseUp={stopRecording}
-            onTouchStart={startRecording} onTouchEnd={stopRecording}
-          >
-            {recording ? '● Release to stop' : '🎤 Hold to speak'}
+          <button className={`t-btn ${dot==='done'?'t-btn-green':'t-btn-primary'}`} onClick={handleScan}>
+            <i className={`ti ${armed?'ti-camera-selfie':dot==='done'?'ti-refresh':'ti-camera'}`} aria-hidden="true"/>
+            {armed ? 'Snap card' : dot==='done' ? 'Rescan' : 'Scan visiting card'}
           </button>
 
-          {loading && (
-            <div className="status-row">
-              <span className="dot active" /><span>Transcribing…</span>
-            </div>
-          )}
-
-          <textarea
-            style={{
-              width: '100%', marginTop: 12, padding: '10px 12px',
-              borderRadius: 10, border: '1px solid #DCE6F7', fontSize: 14,
-              fontFamily: 'inherit', minHeight: 80, resize: 'vertical', color: '#1B2A4A'
-            }}
-            placeholder="Or type your instruction here…"
-            value={voiceInstruction}
-            onChange={e => setVoiceInstruction(e.target.value)}
-          />
-
-          <button
-            className="btn btn-submit" style={{ marginTop: 12 }}
-            onClick={handleDraft} disabled={loading || !voiceInstruction.trim()}
-          >
-            {loading ? 'Drafting…' : 'Draft Email →'}
-          </button>
-
-          <button onClick={() => setStep(STEP.CARD)} style={{
-            marginTop: 8, background: 'none', border: 'none',
-            color: '#5B6472', fontSize: 13, cursor: 'pointer', width: '100%'
-          }}>
-            ← Back
-          </button>
-        </div>
-      )}
-
-      {/* ── STEP 2: DRAFT ── */}
-      {step === STEP.DRAFT && draft && (
-        <div className="lcs-card is-active">
-          <div className="card-head">
-            <div className="card-icon">
-              <svg viewBox="0 0 24 24" fill="none" width="22" height="22">
-                <rect x="3" y="5" width="18" height="14" rx="2" stroke="#3E7BFA" strokeWidth="1.5"/>
-                <path d="M3 9l9 6 9-6" stroke="#3E7BFA" strokeWidth="1.5" strokeLinecap="round"/>
-              </svg>
-            </div>
-            <div>
-              <div className="card-title">Email Draft</div>
-              <div className="card-sub">{isSpeaking ? 'Reading aloud…' : 'Review and send'}</div>
-            </div>
+          <div className="t-dot-row">
+            <span className={`t-dot t-dot-${dot}`}/>
+            <span>{status}</span>
+            {driveUrl && <a href={driveUrl} target="_blank" rel="noreferrer" style={{ marginLeft:'auto',fontSize:12,color:'#1a73e8',textDecoration:'none' }}>Drive ↗</a>}
           </div>
 
-          <div className="status-row">
-            <span className={`dot ${isSpeaking ? 'active' : 'done'}`} />
-            <span style={{ flex: 1 }}>{isSpeaking ? 'Playing draft…' : 'Ready to send'}</span>
-            <button
-              onClick={isSpeaking ? stop : () => speak(draft.speak_text)}
-              style={{
-                fontSize: 12, color: '#3E7BFA', background: 'none',
-                border: 'none', cursor: 'pointer', padding: 0, width: 'auto', marginTop: 0
-              }}
-            >
-              {isSpeaking ? 'Stop' : '▶ Replay'}
-            </button>
-          </div>
-
-          <div style={{ marginTop: 12 }}>
-            <label style={{ fontSize: 11, fontWeight: 600, color: '#5B6472', display: 'block', marginBottom: 4 }}>
-              SUBJECT
-            </label>
-            <input
-              style={{
-                width: '100%', padding: '10px 12px', borderRadius: 10,
-                border: '1px solid #DCE6F7', fontSize: 14, color: '#1B2A4A', fontFamily: 'inherit'
-              }}
-              value={draft.subject}
-              onChange={e => setDraft(d => ({ ...d, subject: e.target.value }))}
-            />
-          </div>
-
-          <div style={{ marginTop: 10 }}>
-            <label style={{ fontSize: 11, fontWeight: 600, color: '#5B6472', display: 'block', marginBottom: 4 }}>
-              BODY
-            </label>
-            <textarea
-              style={{
-                width: '100%', padding: '10px 12px', borderRadius: 10,
-                border: '1px solid #DCE6F7', fontSize: 14, fontFamily: 'inherit',
-                minHeight: 160, resize: 'vertical', color: '#1B2A4A'
-              }}
-              value={draft.body}
-              onChange={e => setDraft(d => ({ ...d, body: e.target.value }))}
-            />
-          </div>
-
-          <button
-            className="btn btn-submit" style={{ marginTop: 12 }}
-            onClick={handleSend} disabled={sending}
-          >
-            {sending ? 'Sending…' : '✉ Send Email'}
-          </button>
-
-          <button onClick={() => { stop(); setStep(STEP.VOICE) }} style={{
-            marginTop: 8, background: 'none', border: 'none',
-            color: '#5B6472', fontSize: 13, cursor: 'pointer', width: '100%'
-          }}>
-            ← Edit instruction
-          </button>
-        </div>
-      )}
-
-      {/* ── STEP 3: SENT ── */}
-      {step === STEP.SENT && (
-        <div className="lcs-card is-done">
-          {sendResult?.method === 'gmail' ? (
-            <div style={{ textAlign: 'center', padding: '24px 0' }}>
-              <div style={{ fontSize: 40, marginBottom: 12 }}>✅</div>
-              <div className="card-title">Email sent!</div>
-              <div className="card-sub" style={{ marginTop: 4 }}>
-                Delivered to {savedContact?.name}
-              </div>
-            </div>
-          ) : (
-            <div>
-              <div className="card-head">
-                <div className="card-icon" style={{ background: '#FFF6E5' }}>
-                  <svg viewBox="0 0 24 24" fill="none" width="22" height="22">
-                    <circle cx="12" cy="12" r="9" stroke="#F59E0B" strokeWidth="1.5"/>
-                    <path d="M12 8v4M12 16h.01" stroke="#F59E0B" strokeWidth="1.5" strokeLinecap="round"/>
-                  </svg>
-                </div>
-                <div>
-                  <div className="card-title">Gmail not connected yet</div>
-                  <div className="card-sub">Use one of these to send</div>
-                </div>
-              </div>
-
-              <a
-                href={sendResult?.mailto}
-                className="btn btn-submit"
-                style={{ display: 'flex', textDecoration: 'none', marginBottom: 8 }}
-              >
-                📧 Open in Mail App
-              </a>
-
-              <button
-                onClick={() => {
-                  navigator.clipboard.writeText(draft?.body || '')
-                  showToast('Copied!', 'success')
-                }}
-                className="btn" style={{ background: '#5B6472' }}
-              >
-                Copy Email Body
-              </button>
-
-              {savedContact?.drive_url && (
-                <div style={{
-                  marginTop: 12, padding: 12, background: '#F4FBF7',
-                  borderRadius: 10, fontSize: 12.5
-                }}>
-                  <strong>Card saved:</strong>{' '}
-                  <a href={savedContact.drive_url} target="_blank" rel="noreferrer"
-                    style={{ color: '#3E7BFA' }}>
-                    View in Drive ↗
-                  </a>
-                </div>
+          {hasFields && (
+            <div className="t-ef">
+              <div className="t-ef-head">Extracted details</div>
+              {[['Name','name'],['Role','role'],['Email','email'],['Phone','phone'],['Company','company'],['Website','website']].map(([l,k])=>
+                extracted[k] ? (
+                  <div key={k} className="t-ef-row">
+                    <span className="t-ef-key">{l}</span>
+                    <span style={{ flex:1 }}>
+                      <input defaultValue={extracted[k]} onChange={e=>setExtracted(p=>({...p,[k]:e.target.value}))} />
+                    </span>
+                  </div>
+                ) : null
               )}
             </div>
           )}
 
-          <button className="btn btn-scan" style={{ marginTop: 16 }} onClick={reset}>
-            Scan Another Card
-          </button>
+          {hasFields && (
+            <button className="t-btn t-btn-primary" style={{ marginTop:12 }} onClick={handleConfirm}>
+              <i className="ti ti-mail" aria-hidden="true"/> Save and write email
+            </button>
+          )}
         </div>
       )}
 
+      {/* ── VOICE ── */}
+      {step===STEP.VOICE && contact && (
+        <div className="t-card">
+          <div className="t-card-head">
+            <div className="t-icon ti-green"><i className="ti ti-microphone" aria-hidden="true"/></div>
+            <div><div className="t-ct">What should the email say?</div><div className="t-cs">To {contact.name||contact.email||'contact'}</div></div>
+          </div>
+
+          <button className={`t-btn ${recording?'t-btn-red':'t-btn-ghost'}`}
+            onMouseDown={startRec} onMouseUp={stopRec} onTouchStart={startRec} onTouchEnd={stopRec}
+            style={{ userSelect:'none' }}>
+            <i className={`ti ${recording?'ti-microphone-off':'ti-microphone'}`} aria-hidden="true"/>
+            {recording ? 'Release to stop' : 'Hold to speak'}
+          </button>
+
+          {loading && <div className="t-dot-row"><span className="t-dot t-dot-active"/><span>Transcribing…</span></div>}
+
+          <textarea className="t-input" rows={3} placeholder="Or type your instruction here…"
+            value={instruction} onChange={e=>setInstruction(e.target.value)}
+            style={{ marginTop:10,resize:'vertical',minHeight:80 }} />
+
+          <button className="t-btn t-btn-primary" onClick={handleDraft} disabled={loading||!instruction.trim()}>
+            {loading?'Drafting…':<><i className="ti ti-wand" aria-hidden="true"/> Draft email</>}
+          </button>
+          <button className="t-btn t-btn-ghost" onClick={()=>setStep(STEP.SCAN)}>← Back</button>
+        </div>
+      )}
+
+      {/* ── DRAFT ── */}
+      {step===STEP.DRAFT && draft && (
+        <div className="t-card">
+          <div className="t-card-head">
+            <div className="t-icon ti-blue"><i className="ti ti-mail" aria-hidden="true"/></div>
+            <div style={{ flex:1 }}>
+              <div className="t-ct">Email draft</div>
+              <div className="t-cs">{isSpeaking?'Reading aloud…':'Review and send'}</div>
+            </div>
+            <button onClick={isSpeaking?stop:()=>speak(`Subject: ${draft.subject}. ${draft.body}`.slice(0,600))}
+              style={{ background:'none',border:'1px solid #e5e5e4',borderRadius:8,padding:'5px 10px',fontSize:12,cursor:'pointer',color:'#6b7280',fontFamily:'inherit' }}>
+              {isSpeaking?'Stop':'▶ Replay'}
+            </button>
+          </div>
+
+          <div style={{ marginBottom:10 }}>
+            <label style={{ fontSize:11,fontWeight:600,color:'#6b7280',display:'block',marginBottom:4,textTransform:'uppercase',letterSpacing:'.3px' }}>Subject</label>
+            <input className="t-input" value={draft.subject} onChange={e=>setDraft(d=>({...d,subject:e.target.value}))} />
+          </div>
+          <div>
+            <label style={{ fontSize:11,fontWeight:600,color:'#6b7280',display:'block',marginBottom:4,textTransform:'uppercase',letterSpacing:'.3px' }}>Body</label>
+            <textarea className="t-input" rows={7} value={draft.body} onChange={e=>setDraft(d=>({...d,body:e.target.value}))} style={{ resize:'vertical' }} />
+          </div>
+
+          <button className="t-btn t-btn-primary" onClick={handleSend} disabled={sending}>
+            {sending?'Sending…':<><i className="ti ti-send" aria-hidden="true"/> Send email</>}
+          </button>
+          <button className="t-btn t-btn-ghost" onClick={()=>{stop();setStep(STEP.VOICE)}}>← Edit instruction</button>
+        </div>
+      )}
+
+      {/* ── SENT ── */}
+      {step===STEP.SENT && (
+        <div className="t-card">
+          {sendResult?.method==='gmail' ? (
+            <div style={{ textAlign:'center',padding:'24px 0' }}>
+              <div style={{ fontSize:44,marginBottom:12 }}>✅</div>
+              <div className="t-ct" style={{ fontSize:16 }}>Email sent!</div>
+              <div className="t-cs" style={{ marginTop:4 }}>Delivered to {contact?.name}</div>
+            </div>
+          ) : (
+            <>
+              <div className="t-card-head">
+                <div className="t-icon ti-amber"><i className="ti ti-info-circle" aria-hidden="true"/></div>
+                <div><div className="t-ct">Gmail not connected yet</div><div className="t-cs">Use one of these to send</div></div>
+              </div>
+              <a href={sendResult?.mailto} className="t-btn t-btn-primary" style={{ textDecoration:'none',display:'flex' }}>
+                <i className="ti ti-mail" aria-hidden="true"/> Open in mail app
+              </a>
+              <button className="t-btn t-btn-ghost" onClick={()=>{navigator.clipboard.writeText(draft?.body||'');toast('Copied!','success')}}>
+                <i className="ti ti-copy" aria-hidden="true"/> Copy email body
+              </button>
+              {contact?.drive_url && (
+                <div style={{ marginTop:12,padding:11,background:'#f0fdf4',borderRadius:10,fontSize:13 }}>
+                  Card saved → <a href={contact.drive_url} target="_blank" rel="noreferrer" style={{ color:'#065f46' }}>View in Drive ↗</a>
+                </div>
+              )}
+            </>
+          )}
+          <button className="t-btn t-btn-ghost" style={{ marginTop:12 }} onClick={reset}>
+            <i className="ti ti-refresh" aria-hidden="true"/> Scan another card
+          </button>
+        </div>
+      )}
     </div>
   )
 }
 
-// ── Toast ──────────────────────────────────────────────────────────────────
-function showToast(msg, type = 'info') {
-  let el = document.getElementById('tiby-toast')
-  if (!el) {
-    el = document.createElement('div')
-    el.id = 'tiby-toast'
-    el.style.cssText = [
-      'position:fixed', 'left:50%', 'bottom:24px',
-      'transform:translateX(-50%) translateY(10px)',
-      'background:#1B2A4A', 'color:#fff', 'padding:12px 22px',
-      'border-radius:12px', 'font-size:13.5px', 'font-weight:500',
-      'opacity:0', 'pointer-events:none',
-      'transition:opacity .2s,transform .2s',
-      'z-index:9999', 'max-width:88vw', 'text-align:center',
-      'box-shadow:0 4px 20px rgba(27,42,74,.25)'
-    ].join(';')
-    document.body.appendChild(el)
-  }
-  el.textContent = msg
-  el.style.background = type === 'error' ? '#D65A56' : type === 'success' ? '#2FA36B' : '#1B2A4A'
-  el.style.opacity = '1'
-  el.style.transform = 'translateX(-50%) translateY(0)'
-  clearTimeout(el._t)
-  el._t = setTimeout(() => {
-    el.style.opacity = '0'
-    el.style.transform = 'translateX(-50%) translateY(10px)'
-  }, 3200)
+function toast(msg,type='info') {
+  let el=document.getElementById('t-toast')
+  if(!el){el=document.createElement('div');el.id='t-toast';document.body.appendChild(el)}
+  el.textContent=msg
+  el.className=type==='error'?'error':type==='success'?'success':''
+  el.classList.add('show')
+  clearTimeout(el._t); el._t=setTimeout(()=>el.classList.remove('show'),3000)
 }
