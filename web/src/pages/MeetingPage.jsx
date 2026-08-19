@@ -108,7 +108,6 @@ export default function MeetingPage() {
 
   // ── Recording ────────────────────────────────────────────────────────────────
   async function startRecording() {
-    if (!title.trim()) return showToast('Enter a meeting title first', 'error')
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       chunksRef.current = []
@@ -250,6 +249,12 @@ export default function MeetingPage() {
           <button className="btn btn-scan" onClick={reset}>
             New Meeting
           </button>
+
+          <a href="https://docs.google.com/spreadsheets/d/1i2g6CyilXM--qk35qHwydYkyokvd0L0oEjO7b8BNW6I/edit#gid=0"
+            target="_blank" rel="noreferrer"
+            style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:8, marginTop:10, padding:'11px', borderRadius:24, border:'1.5px solid #DCE6F7', background:'#fff', color:'#1B2A4A', fontSize:14, fontWeight:600, textDecoration:'none' }}>
+            📊 View All Meetings in Sheet
+          </a>
         </div>
       </div>
     )
@@ -299,7 +304,12 @@ export default function MeetingPage() {
 
         {mode !== 'notes' ? (
           <button className="btn" style={{ background:'#F59E0B' }}
-            onClick={() => { if (!title.trim()) return showToast('Enter a meeting title first', 'error'); setMode('notes') }}>
+            onClick={() => {
+              if (!title.trim()) return showToast('Enter a meeting title first', 'error')
+              setMode('notes')
+              // Open camera immediately — no second click needed
+              setTimeout(() => openCamera(), 50)
+            }}>
             📝 Scan Notes
           </button>
         ) : (
@@ -370,8 +380,13 @@ export default function MeetingPage() {
         </div>
 
         {mode !== 'record' ? (
-          <button className="btn" style={{ background:'#1B2A4A' }}
-            onClick={() => { if (!title.trim()) return showToast('Enter a meeting title first', 'error'); setMode('record') }}>
+          <button className="btn" style={{ background:'#D65A56' }}
+            onClick={() => {
+              if (!title.trim()) return showToast('Enter a meeting title first', 'error')
+              setMode('record')
+              // Start recording immediately — no second click needed
+              setTimeout(() => startRecording(), 50)
+            }}>
             🎙 Start Recording
           </button>
         ) : (
@@ -407,6 +422,13 @@ export default function MeetingPage() {
         )}
       </div>
       <style>{`@keyframes pulse{50%{opacity:.3}}`}</style>
+
+      {/* Past meetings link */}
+      <a href="https://docs.google.com/spreadsheets/d/1i2g6CyilXM--qk35qHwydYkyokvd0L0oEjO7b8BNW6I/edit#gid=0"
+        target="_blank" rel="noreferrer"
+        style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:8, marginTop:4, padding:'13px', borderRadius:16, border:'1.5px solid #DCE6F7', background:'#fff', color:'#5B6472', fontSize:13.5, fontWeight:600, textDecoration:'none', boxShadow:'0 1px 4px rgba(27,42,74,.06)' }}>
+        📋 View Past Meetings in Sheets
+      </a>
     </div>
   )
 }
