@@ -3,12 +3,16 @@ import { getUserContext } from '../services/userProfile'
 
 const APPS_SCRIPT_URL = import.meta.env.VITE_APPS_SCRIPT_URL || ''
 const API_URL = import.meta.env.VITE_API_URL || 'https://tiby.onrender.com/api/v1'
-const SHEET_URL = 'https://docs.google.com/spreadsheets/d/1i2g6CyilXM--qk35qHwydYkyokvd0L0oEjO7b8BNW6I'
+
+function getSupportedMimeType() {
+  const types = ['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/mp4']
+  return types.find(t => MediaRecorder.isTypeSupported(t)) || ''
+}
 
 export default function MeetingPage() {
   const [title, setTitle]           = useState('')
   const [userCtx, setUserCtx]       = useState({})
-  useEffect(() => { getUserContext().then(setUserCtx) }, [])
+  const [sheetUrl, setSheetUrl]     = useState(null)
   const [mode, setMode]             = useState(null)
   const [result, setResult]         = useState(null)
   const [loading, setLoading]       = useState(false)
@@ -20,9 +24,22 @@ export default function MeetingPage() {
   const [recording, setRecording]   = useState(false)
   const [elapsed, setElapsed]       = useState(0)
 
-  const videoRef  = useRef(); const streamRef = useRef()
-  const mrRef     = useRef(); const chunksRef = useRef([])
+  const videoRef  = useRef(); const streamRef  = useRef()
+  const mrRef     = useRef(); const chunksRef  = useRef([])
   const timerRef  = useRef()
+
+  useEffect(() => {
+    getUserContext().then(ctx => {
+      setUserCtx(ctx)
+      if (ctx.sheet_id) setSheetUrl(`https://docs.google.com/spreadsheets/d/${ctx.sheet_id}`)
+    })
+    // Cleanup on unmount — stop camera and recording
+    return () => {
+      streamRef.current?.getTracks().forEach(t => t.stop())
+      try { mrRef.current?.stop() } catch {}
+      clearInterval(timerRef.current)
+    }
+  }, [])
 
   function b64(blob) {
     return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(',')[1]);r.onerror=rej;r.readAsDataURL(blob)})
@@ -51,6 +68,7 @@ export default function MeetingPage() {
     cv.width=videoRef.current.videoWidth;cv.height=videoRef.current.videoHeight
     cv.getContext('2d').drawImage(videoRef.current,0,0)
     streamRef.current?.getTracks().forEach(t=>t.stop())
+    streamRef.current=null
     videoRef.current.style.display='none';setCameraOpen(false)
     const blob=await resize(cv)
     setNoteBlob(blob);setNotePreview(URL.createObjectURL(blob))
@@ -61,7 +79,10 @@ export default function MeetingPage() {
     setLoading(true);setDot('active');setStatus('Reading handwritten notes…')
     try {
       const enc=await b64(noteBlob)
-      const res=await fetch(APPS_SCRIPT_URL,{method:'POST',body:JSON.stringify({action:'scan-notes',image_base64:enc,image_mime:'image/jpeg',meeting_title:title||'Meeting',sheet_id:userCtx.sheet_id})})
+      const res=await fetch(APPS_SCRIPT_URL,{method:'POST',body:JSON.stringify({
+        action:'scan-notes',image_base64:enc,image_mime:'image/jpeg',
+        meeting_title:title||'Meeting',sheet_id:userCtx.sheet_id
+      })})
       const data=await res.json()
       if(data.status==='success'){setResult(data);setDot('done');setStatus('Minutes ready')}
       else throw new Error(data.message||'Extraction failed')
@@ -72,8 +93,11 @@ export default function MeetingPage() {
   async function startRecording() {
     try {
       const stream=await navigator.mediaDevices.getUserMedia({audio:true})
+      streamRef.current=stream
       chunksRef.current=[]
-      const mr=new MediaRecorder(stream,{mimeType:'audio/webm'});mrRef.current=mr
+      const mimeType=getSupportedMimeType()
+      const mr=new MediaRecorder(stream,mimeType?{mimeType}:{})
+      mrRef.current=mr
       mr.ondataavailable=e=>{if(e.data.size>0)chunksRef.current.push(e.data)}
       mr.start(1000);setRecording(true);setElapsed(0)
       setDot('active');setStatus('Recording…')
@@ -84,8 +108,17 @@ export default function MeetingPage() {
   async function stopRecording() {
     clearInterval(timerRef.current);setRecording(false)
     setLoading(true);setDot('active');setStatus('Stopping…')
-    await new Promise(resolve=>{mrRef.current.onstop=resolve;mrRef.current.stream?.getTracks().forEach(t=>t.stop());mrRef.current.stop()})
-    const blob=new Blob(chunksRef.current,{type:'audio/webm'})
+    const mimeType = mrRef.current?.mimeType || 'audio/webm'
+
+    await new Promise(resolve=>{
+      mrRef.current.onstop=resolve
+      // Stop stream tracks properly
+      streamRef.current?.getTracks().forEach(t=>t.stop())
+      streamRef.current=null
+      try { mrRef.current.stop() } catch {}
+    })
+
+    const blob=new Blob(chunksRef.current,{type:mimeType})
     try {
       setStatus('Transcribing audio…')
       const form=new FormData();form.append('file',blob,'recording.webm')
@@ -94,7 +127,10 @@ export default function MeetingPage() {
       const transcript=sttData.transcript||''
       if(!transcript)throw new Error('No speech detected')
       setStatus('Generating minutes…')
-      const momRes=await fetch(APPS_SCRIPT_URL,{method:'POST',body:JSON.stringify({action:'generate-mom',transcript,meeting_title:title||'Meeting',sheet_id:userCtx.sheet_id})})
+      const momRes=await fetch(APPS_SCRIPT_URL,{method:'POST',body:JSON.stringify({
+        action:'generate-mom',transcript,
+        meeting_title:title||'Meeting',sheet_id:userCtx.sheet_id
+      })})
       const momData=await momRes.json()
       if(momData.status!=='success')throw new Error(momData.message||'MOM generation failed')
       setResult({...momData,transcript});setDot('done');setStatus('Minutes ready')
@@ -106,28 +142,28 @@ export default function MeetingPage() {
     setMode(null);setResult(null);setTitle('')
     setStatus('');setDot('idle');setNoteBlob(null);setNotePreview(null);setCameraOpen(false)
     setRecording(false);setElapsed(0)
-    streamRef.current?.getTracks().forEach(t=>t.stop())
+    streamRef.current?.getTracks().forEach(t=>t.stop());streamRef.current=null
     if(videoRef.current){videoRef.current.style.display='none';videoRef.current.srcObject=null}
     clearInterval(timerRef.current)
+    try{mrRef.current?.stop()}catch{}
   }
 
-  // ── RESULT ──────────────────────────────────────────────────────────────────
   if(result) return (
     <div className="t-content" style={{paddingTop:16}}>
       <div className="t-card success">
         <div className="t-card-head">
           <div className="t-icon ti-green"><i className="ti ti-check" aria-hidden="true"/></div>
-          <div><div className="t-ct">{title||'Meeting'}</div><div className="t-cs">Minutes of meeting ready</div></div>
+          <div><div className="t-ct">{title||'Meeting'}</div><div className="t-cs">Minutes ready</div></div>
         </div>
 
-        {result.summary && (
+        {result.summary&&(
           <div style={{background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:10,padding:12,marginBottom:12}}>
             <div style={{fontSize:11,fontWeight:700,color:'#065f46',textTransform:'uppercase',letterSpacing:'.4px',marginBottom:6}}>Summary</div>
             <p style={{fontSize:13.5,color:'#1a1a1a',lineHeight:1.6,margin:0}}>{result.summary}</p>
           </div>
         )}
 
-        {result.action_items?.length>0 && (
+        {result.action_items?.length>0&&(
           <div style={{marginBottom:12}}>
             <div style={{fontSize:11,fontWeight:700,color:'#1e40af',textTransform:'uppercase',letterSpacing:'.4px',marginBottom:10}}>Action items</div>
             {result.action_items.map((item,i)=>(
@@ -145,10 +181,10 @@ export default function MeetingPage() {
           </div>
         )}
 
-        {result.mom && (
+        {result.mom&&(
           <details style={{marginBottom:12}}>
             <summary style={{fontSize:13,fontWeight:600,color:'#6b7280',cursor:'pointer',userSelect:'none',listStyle:'none',display:'flex',alignItems:'center',gap:6}}>
-              <i className="ti ti-file-text" style={{fontSize:16}} aria-hidden="true"/> Full minutes of meeting
+              <i className="ti ti-file-text" style={{fontSize:16}} aria-hidden="true"/> Full minutes
             </summary>
             <div style={{fontSize:13,color:'#1a1a1a',lineHeight:1.7,whiteSpace:'pre-wrap',background:'#f9f9f8',borderRadius:9,padding:12,marginTop:8}}>
               {result.mom}
@@ -160,9 +196,9 @@ export default function MeetingPage() {
           className="t-btn t-btn-primary" style={{textDecoration:'none',display:'flex'}}>
           <i className="ti ti-mail" aria-hidden="true"/> Email MOM to myself
         </a>
-        <a href={SHEET_URL} target="_blank" rel="noreferrer" className="t-btn t-btn-ghost" style={{textDecoration:'none',display:'flex'}}>
+        {sheetUrl&&<a href={sheetUrl} target="_blank" rel="noreferrer" className="t-btn t-btn-ghost" style={{textDecoration:'none',display:'flex'}}>
           <i className="ti ti-external-link" aria-hidden="true"/> View in Sheets
-        </a>
+        </a>}
         <button className="t-btn t-btn-ghost" onClick={reset}>
           <i className="ti ti-plus" aria-hidden="true"/> New meeting
         </button>
@@ -170,57 +206,37 @@ export default function MeetingPage() {
     </div>
   )
 
-  // ── MAIN ────────────────────────────────────────────────────────────────────
   return (
     <div className="t-content" style={{paddingTop:16}}>
-
-      {/* Title */}
       <div className="t-card">
         <div className="t-card-head">
           <div className="t-icon ti-gray"><i className="ti ti-calendar" aria-hidden="true"/></div>
           <div><div className="t-ct">New meeting</div><div className="t-cs">Enter title then choose an option</div></div>
         </div>
         <input className="t-input" placeholder="Meeting title — e.g. Client call with Rahul"
-          value={title} onChange={e=>setTitle(e.target.value)} disabled={loading||recording} />
+          value={title} onChange={e=>setTitle(e.target.value)} disabled={loading||recording}/>
       </div>
 
-      {/* ── NOTES ── */}
+      {/* Notes scan */}
       <div className={`t-card ${mode==='notes'?'accent':''}`}>
         <div className="t-card-head">
           <div className="t-icon ti-amber"><i className="ti ti-pencil" aria-hidden="true"/></div>
-          <div><div className="t-ct">Scan handwritten notes</div><div className="t-cs">Photo of notes → AI makes MOM + action items</div></div>
+          <div><div className="t-ct">Scan handwritten notes</div><div className="t-cs">Photo → AI minutes + action items</div></div>
         </div>
-
-        {mode!=='notes' ? (
-          <button className="t-btn t-btn-amber" onClick={()=>{
-            if(!title.trim())return toast('Enter a meeting title first','error')
-            setMode('notes');setTimeout(()=>openCamera(),50)
-          }}>
+        {mode!=='notes'?(
+          <button className="t-btn t-btn-amber" onClick={()=>{if(!title.trim())return toast('Enter a meeting title first','error');setMode('notes');setTimeout(()=>openCamera(),50)}}>
             <i className="ti ti-pencil" aria-hidden="true"/> Scan notes
           </button>
-        ) : (
+        ):(
           <>
             <video ref={videoRef} autoPlay playsInline muted style={{display:'none',width:'100%',borderRadius:11,marginBottom:10,background:'#000',aspectRatio:'4/3',objectFit:'cover'}}/>
             {notePreview&&<img src={notePreview} alt="Notes" style={{width:'100%',borderRadius:11,marginBottom:10,aspectRatio:'4/3',objectFit:'cover'}}/>}
-
-            {!cameraOpen&&!noteBlob&&!loading&&(
-              <button className="t-btn t-btn-amber" onClick={openCamera}>
-                <i className="ti ti-camera" aria-hidden="true"/> Open camera
-              </button>
-            )}
-            {cameraOpen&&(
-              <button className="t-btn t-btn-green" onClick={snapPhoto}>
-                <i className="ti ti-camera-selfie" aria-hidden="true"/> Snap photo
-              </button>
-            )}
+            {!cameraOpen&&!noteBlob&&!loading&&<button className="t-btn t-btn-amber" onClick={openCamera}><i className="ti ti-camera" aria-hidden="true"/> Open camera</button>}
+            {cameraOpen&&<button className="t-btn t-btn-green" onClick={snapPhoto}><i className="ti ti-camera-selfie" aria-hidden="true"/> Snap photo</button>}
             {noteBlob&&!loading&&(
               <div style={{display:'flex',gap:8}}>
-                <button className="t-btn t-btn-ghost" style={{flex:1}} onClick={()=>{setNoteBlob(null);setNotePreview(null);openCamera()}}>
-                  <i className="ti ti-refresh" aria-hidden="true"/> Retake
-                </button>
-                <button className="t-btn t-btn-primary" style={{flex:2,marginTop:0}} onClick={processNotes}>
-                  <i className="ti ti-wand" aria-hidden="true"/> Process notes
-                </button>
+                <button className="t-btn t-btn-ghost" style={{flex:1}} onClick={()=>{setNoteBlob(null);setNotePreview(null);openCamera()}}><i className="ti ti-refresh" aria-hidden="true"/> Retake</button>
+                <button className="t-btn t-btn-primary" style={{flex:2,marginTop:0}} onClick={processNotes}><i className="ti ti-wand" aria-hidden="true"/> Process notes</button>
               </div>
             )}
             {loading&&<div className="t-dot-row"><span className="t-dot t-dot-active"/><span>{status}</span></div>}
@@ -229,50 +245,38 @@ export default function MeetingPage() {
         )}
       </div>
 
-      {/* ── RECORD ── */}
+      {/* Record */}
       <div className={`t-card ${mode==='record'?'danger':''}`}>
         <div className="t-card-head">
           <div className="t-icon ti-red"><i className="ti ti-microphone" aria-hidden="true"/></div>
-          <div><div className="t-ct">Record meeting</div><div className="t-cs">Live audio → Deepgram STT → AI makes MOM</div></div>
+          <div><div className="t-ct">Record meeting</div><div className="t-cs">Live audio → Deepgram → AI minutes</div></div>
         </div>
-
-        {mode!=='record' ? (
-          <button className="t-btn t-btn-primary" onClick={()=>{
-            if(!title.trim())return toast('Enter a meeting title first','error')
-            setMode('record');setTimeout(()=>startRecording(),50)
-          }}>
+        {mode!=='record'?(
+          <button className="t-btn t-btn-primary" onClick={()=>{if(!title.trim())return toast('Enter a meeting title first','error');setMode('record');setTimeout(()=>startRecording(),50)}}>
             <i className="ti ti-microphone" aria-hidden="true"/> Start recording
           </button>
-        ) : (
+        ):(
           <>
             {recording&&(
               <div style={{background:'#fef2f2',border:'1px solid #fecaca',borderRadius:11,padding:'14px 16px',marginBottom:10}}>
                 <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:10}}>
                   <div style={{width:9,height:9,borderRadius:'50%',background:'#ef4444',animation:'tdot 1s infinite'}}/>
-                  <span className="t-timer">{fmt(elapsed)}</span>
+                  <span style={{fontFamily:'monospace',fontSize:22,color:'#ef4444',fontWeight:600}}>{fmt(elapsed)}</span>
                   <span style={{fontSize:13,color:'#6b7280'}}>Recording…</span>
                 </div>
-                <button className="t-btn t-btn-red" onClick={stopRecording}>
-                  <i className="ti ti-square" aria-hidden="true"/> Stop and process
-                </button>
+                <button className="t-btn t-btn-red" onClick={stopRecording}><i className="ti ti-square" aria-hidden="true"/> Stop and process</button>
               </div>
             )}
-            {!recording&&!loading&&(
-              <button className="t-btn t-btn-red" onClick={startRecording}>
-                <i className="ti ti-circle" aria-hidden="true"/> Start recording
-              </button>
-            )}
+            {!recording&&!loading&&<button className="t-btn t-btn-red" onClick={startRecording}><i className="ti ti-circle" aria-hidden="true"/> Start recording</button>}
             {loading&&!recording&&<div className="t-dot-row"><span className="t-dot t-dot-active"/><span>{status}</span></div>}
             {dot==='warn'&&!loading&&!recording&&<div className="t-dot-row"><span className="t-dot t-dot-warn"/><span>{status}</span></div>}
           </>
         )}
       </div>
 
-      {/* Past meetings link */}
-      <a href={`${SHEET_URL}/edit#gid=0`} target="_blank" rel="noreferrer"
-        className="t-btn t-btn-ghost" style={{textDecoration:'none',display:'flex'}}>
-        <i className="ti ti-external-link" aria-hidden="true"/> View past meetings in Sheets
-      </a>
+      {sheetUrl&&<a href={sheetUrl} target="_blank" rel="noreferrer" className="t-btn t-btn-ghost" style={{textDecoration:'none',display:'flex'}}>
+        <i className="ti ti-external-link" aria-hidden="true"/> View past meetings
+      </a>}
 
       <style>{`@keyframes tdot{50%{opacity:.3}}`}</style>
     </div>
