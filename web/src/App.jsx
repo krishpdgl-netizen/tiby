@@ -49,7 +49,7 @@ function AppInner({ user }) {
   const handleWake    = useCallback(() => setOverlayOpen(true), [])
   const handleCommand = useCallback((t) => { setOverlayOpen(false); route(t) }, [route])
 
-  const { isListening, wakeDetected } = useWakeWord({ onWake: handleWake, enabled: !overlayOpen })
+  const { isListening, wakeDetected } = useWakeWord({ onWake: handleWake, enabled: false })
 
   const meta = PAGE_META[path] || PAGE_META['/home']
   const isHome = path === '/home' || path === '/'
