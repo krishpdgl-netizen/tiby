@@ -146,3 +146,23 @@ def _serialize_meeting(m: Meeting) -> dict:
         "mom_sent_at": m.mom_sent_at.isoformat() if m.mom_sent_at else None,
         "created_at": m.created_at.isoformat(),
     }
+from fastapi.responses import JSONResponse
+
+def _cors():
+    return {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+        "Access-Control-Allow-Headers": "*",
+    }
+
+@router.options("/start")
+async def meetings_start_options():
+    return JSONResponse(content={}, headers=_cors())
+
+@router.options("/{meeting_id}/upload")
+async def meetings_upload_options(meeting_id: str):
+    return JSONResponse(content={}, headers=_cors())
+
+@router.options("/")
+async def meetings_list_options():
+    return JSONResponse(content={}, headers=_cors())
