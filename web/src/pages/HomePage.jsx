@@ -4,7 +4,7 @@ import { useSpeech } from '../hooks/useSpeech'
 import { getUserContext } from '../services/userProfile'
 
 const APPS_SCRIPT_URL = import.meta.env.VITE_APPS_SCRIPT_URL || ''
-const GEMINI_API_URL  = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent'
+const GEMINI_API_URL  = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent'
 const GEMINI_KEY      = import.meta.env.VITE_GEMINI_KEY || ''
 
 const SYSTEM_PROMPT = `You are Tiby, a smart AI personal assistant built into a PWA. You help users with:
