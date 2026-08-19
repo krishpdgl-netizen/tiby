@@ -1,172 +1,107 @@
-/**
- * WakeWordOverlay
- * Shown when "Hey Tiby" is detected — pulsing ring + listening state.
- * Dismisses automatically after the user finishes speaking or clicks away.
- */
 import { useEffect, useRef, useState } from 'react'
-import { Mic, X } from 'lucide-react'
-import { transcribeVoice } from '../services/api'
+
+const API_URL = import.meta.env.VITE_API_URL || 'https://tiby.onrender.com/api/v1'
+
+function getSupportedMimeType() {
+  const types = ['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/mp4']
+  return types.find(t => MediaRecorder.isTypeSupported(t)) || ''
+}
 
 export default function WakeWordOverlay({ onCommand, onDismiss }) {
-  const [phase, setPhase] = useState('wake')   // wake → listening → processing → done
+  const [phase, setPhase]           = useState('wake')
   const [transcript, setTranscript] = useState('')
-  const mediaRecorderRef = useRef()
-  const chunksRef = useRef([])
-  const silenceTimerRef = useRef()
+  const mrRef      = useRef()
+  const chunksRef  = useRef([])
+  const timerRef   = useRef()
+  const streamRef  = useRef()
 
   useEffect(() => {
-    // Auto-start mic capture after brief wake animation
     const t = setTimeout(() => startListening(), 600)
-    return () => clearTimeout(t)
+    return () => {
+      clearTimeout(t)
+      clearTimeout(timerRef.current)
+      try { mrRef.current?.stop() } catch {}
+      streamRef.current?.getTracks().forEach(t => t.stop())
+    }
   }, [])
 
-  const startListening = async () => {
+  async function startListening() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      streamRef.current = stream
       chunksRef.current = []
-      const mr = new MediaRecorder(stream, { mimeType: 'audio/webm' })
-      mediaRecorderRef.current = mr
-
-      mr.ondataavailable = (e) => {
-        if (e.data.size > 0) chunksRef.current.push(e.data)
-      }
+      const mimeType = getSupportedMimeType()
+      const mr = new MediaRecorder(stream, mimeType ? { mimeType } : {})
+      mrRef.current = mr
+      mr.ondataavailable = e => { if (e.data.size > 0) chunksRef.current.push(e.data) }
       mr.onstop = async () => {
-        stream.getTracks().forEach((t) => t.stop())
-        await processAudio()
+        stream.getTracks().forEach(t => t.stop())
+        await processAudio(mimeType)
       }
-
-      mr.start(200) // collect every 200ms
+      mr.start(200)
       setPhase('listening')
-
-      // Auto-stop after 8s silence timeout
-      silenceTimerRef.current = setTimeout(() => stopListening(), 8000)
-    } catch {
-      onDismiss?.()
-    }
+      timerRef.current = setTimeout(() => stopListening(), 8000)
+    } catch { onDismiss?.() }
   }
 
-  const stopListening = () => {
-    clearTimeout(silenceTimerRef.current)
-    try { mediaRecorderRef.current?.stop() } catch {}
+  function stopListening() {
+    clearTimeout(timerRef.current)
+    try { mrRef.current?.stop() } catch {}
     setPhase('processing')
   }
 
-  const processAudio = async () => {
-    const blob = new Blob(chunksRef.current, { type: 'audio/webm' })
-    if (blob.size < 1000) { onDismiss?.(); return }   // too short, no real speech
-
+  async function processAudio(mimeType) {
+    const type = mimeType || 'audio/webm'
+    const blob = new Blob(chunksRef.current, { type })
+    if (blob.size < 500) { onDismiss?.(); return }
     try {
-      const { data } = await transcribeVoice(blob)
+      const form = new FormData()
+      form.append('file', blob, 'voice.webm')
+      const res  = await fetch(`${API_URL}/voice/transcribe`, { method: 'POST', body: form })
+      const data = await res.json()
       const text = data.transcript?.trim()
       if (text) {
-        setTranscript(text)
-        setPhase('done')
+        setTranscript(text); setPhase('done')
         setTimeout(() => onCommand?.(text), 800)
-      } else {
-        onDismiss?.()
-      }
-    } catch {
-      onDismiss?.()
-    }
+      } else { onDismiss?.() }
+    } catch { onDismiss?.() }
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center pb-24 pointer-events-none">
-      {/* Backdrop — dim everything */}
-      <div
-        className="absolute inset-0 bg-black/30 backdrop-blur-sm pointer-events-auto"
-        onClick={onDismiss}
-      />
+    <div style={{ position:'fixed',inset:0,zIndex:50,display:'flex',alignItems:'flex-end',justifyContent:'center',paddingBottom:96,pointerEvents:'none' }}>
+      <div style={{ position:'absolute',inset:0,background:'rgba(0,0,0,0.3)',backdropFilter:'blur(4px)',pointerEvents:'auto' }} onClick={onDismiss}/>
+      <div style={{ position:'relative',pointerEvents:'auto',width:'100%',maxWidth:360,margin:'0 16px',background:'#fff',borderRadius:24,boxShadow:'0 20px 60px rgba(0,0,0,0.15)',padding:24,display:'flex',flexDirection:'column',alignItems:'center',gap:16 }}>
+        <button onClick={onDismiss} style={{ position:'absolute',top:12,right:12,background:'none',border:'none',cursor:'pointer',color:'#9ca3af',fontSize:18 }}>✕</button>
 
-      {/* Main card */}
-      <div className="relative pointer-events-auto w-full max-w-sm mx-4 bg-white rounded-3xl shadow-2xl p-6 flex flex-col items-center gap-4">
-
-        {/* Dismiss */}
-        <button
-          onClick={onDismiss}
-          className="absolute top-3 right-3 p-1.5 rounded-full text-gray-400 hover:text-gray-600"
-        >
-          <X size={16} />
-        </button>
-
-        {/* Animated orb */}
-        <div className="relative flex items-center justify-center">
-          {/* Outer pulse rings */}
-          {(phase === 'wake' || phase === 'listening') && (
-            <>
-              <span className="absolute w-24 h-24 rounded-full bg-indigo-400/20 animate-ping" />
-              <span className="absolute w-16 h-16 rounded-full bg-indigo-400/30 animate-ping [animation-delay:150ms]" />
-            </>
-          )}
-          {/* Core orb */}
-          <div className={`w-14 h-14 rounded-full flex items-center justify-center transition-all duration-300 ${
-            phase === 'wake'        ? 'bg-indigo-600 scale-110' :
-            phase === 'listening'   ? 'bg-indigo-600 animate-pulse' :
-            phase === 'processing'  ? 'bg-indigo-400' :
-            'bg-green-500'
-          }`}>
-            <Mic className="text-white" size={24} />
+        {/* Orb */}
+        <div style={{ position:'relative',display:'flex',alignItems:'center',justifyContent:'center' }}>
+          {(phase==='wake'||phase==='listening') && <>
+            <span style={{ position:'absolute',width:96,height:96,borderRadius:'50%',background:'rgba(99,102,241,0.15)',animation:'tping 1s infinite' }}/>
+            <span style={{ position:'absolute',width:64,height:64,borderRadius:'50%',background:'rgba(99,102,241,0.2)',animation:'tping 1s infinite',animationDelay:'.15s' }}/>
+          </>}
+          <div style={{ width:56,height:56,borderRadius:'50%',background:phase==='done'?'#10b981':'#4f46e5',display:'flex',alignItems:'center',justifyContent:'center',transition:'background .3s' }}>
+            <span style={{ fontSize:24 }}>🎤</span>
           </div>
         </div>
 
-        {/* Status text */}
-        <div className="text-center">
-          {phase === 'wake' && (
-            <>
-              <p className="font-semibold text-gray-900">Hey Tiby!</p>
-              <p className="text-sm text-gray-400">Starting mic…</p>
-            </>
-          )}
-          {phase === 'listening' && (
-            <>
-              <p className="font-semibold text-gray-900">Listening…</p>
-              <p className="text-sm text-gray-400">Speak your command</p>
-              <button
-                onClick={stopListening}
-                className="mt-3 text-xs text-indigo-500 hover:underline"
-              >
-                Done speaking
-              </button>
-            </>
-          )}
-          {phase === 'processing' && (
-            <>
-              <p className="font-semibold text-gray-900">Got it…</p>
-              <p className="text-sm text-gray-400">Processing your command</p>
-            </>
-          )}
-          {phase === 'done' && transcript && (
-            <>
-              <p className="font-semibold text-gray-900">"{transcript}"</p>
-              <p className="text-sm text-green-500 mt-1">On it!</p>
-            </>
-          )}
+        {/* Status */}
+        <div style={{ textAlign:'center' }}>
+          {phase==='wake'       && <><p style={{ fontWeight:600,color:'#1a1a1a',margin:0 }}>Hey Tiby!</p><p style={{ fontSize:13,color:'#9ca3af',margin:0 }}>Starting mic…</p></>}
+          {phase==='listening'  && <><p style={{ fontWeight:600,color:'#1a1a1a',margin:0 }}>Listening…</p><p style={{ fontSize:13,color:'#9ca3af',margin:0 }}>Speak your command</p><button onClick={stopListening} style={{ marginTop:8,fontSize:12,color:'#4f46e5',background:'none',border:'none',cursor:'pointer' }}>Done speaking</button></>}
+          {phase==='processing' && <><p style={{ fontWeight:600,color:'#1a1a1a',margin:0 }}>Got it…</p><p style={{ fontSize:13,color:'#9ca3af',margin:0 }}>Processing</p></>}
+          {phase==='done'&&transcript && <><p style={{ fontWeight:600,color:'#1a1a1a',margin:0 }}>"{transcript}"</p><p style={{ fontSize:13,color:'#10b981',margin:'4px 0 0' }}>On it!</p></>}
         </div>
 
-        {/* Audio wave visualiser (CSS only) */}
-        {phase === 'listening' && (
-          <div className="flex items-center gap-1 h-6">
-            {[...Array(8)].map((_, i) => (
-              <div
-                key={i}
-                className="w-1 rounded-full bg-indigo-400"
-                style={{
-                  animation: `soundWave 0.8s ease-in-out infinite`,
-                  animationDelay: `${i * 0.1}s`,
-                  height: `${8 + Math.sin(i) * 8}px`,
-                }}
-              />
+        {/* Wave */}
+        {phase==='listening' && (
+          <div style={{ display:'flex',alignItems:'center',gap:3,height:24 }}>
+            {[...Array(8)].map((_,i) => (
+              <div key={i} style={{ width:3,borderRadius:2,background:'#4f46e5',animation:`twave .8s ease-in-out infinite`,animationDelay:`${i*.1}s`,height:`${8+Math.sin(i)*6}px` }}/>
             ))}
           </div>
         )}
       </div>
-
-      <style>{`
-        @keyframes soundWave {
-          0%, 100% { transform: scaleY(0.4); }
-          50%       { transform: scaleY(1.4); }
-        }
-      `}</style>
+      <style>{`@keyframes tping{0%,100%{transform:scale(1);opacity:.6}50%{transform:scale(1.15);opacity:.2}}@keyframes twave{0%,100%{transform:scaleY(.4)}50%{transform:scaleY(1.4)}}`}</style>
     </div>
   )
 }
