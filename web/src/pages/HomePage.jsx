@@ -1,52 +1,56 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useSpeech } from '../hooks/useSpeech'
 import { getUserContext } from '../services/userProfile'
 
 const APPS_SCRIPT_URL = import.meta.env.VITE_APPS_SCRIPT_URL || ''
+const API_URL = import.meta.env.VITE_API_URL || 'https://tiby.onrender.com/api/v1'
 const GEMINI_API_URL  = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent'
 const GEMINI_KEY      = import.meta.env.VITE_GEMINI_KEY || ''
 
-const SYSTEM_PROMPT = `You are Tiby, a smart AI personal assistant built into a PWA. You help users with:
+// Persist chat across tab switches using sessionStorage
+const STORAGE_KEY = 'tiby_chat_history'
+
+const SYSTEM_PROMPT = `You are Tiby, a smart AI personal assistant. You help users with:
 - Scanning business cards and sending follow-up emails
 - Recording meetings and generating minutes (MOM)
 - Managing tasks and action items
-- Answering general questions conversationally
+- Answering any question conversationally — productivity, email writing, scheduling advice, etc.
 
-You have access to these actions. When you want to perform one, include it as JSON at the END of your reply wrapped in <action></action> tags:
+You have access to these actions. When performing one, include JSON at the END of your reply in <action></action> tags:
 
-Navigate actions (send user to a page):
-<action>{"type":"navigate","route":"/scan"}</action>          → card scanner
-<action>{"type":"navigate","route":"/meetings"}</action>      → meetings
-<action>{"type":"navigate","route":"/contacts"}</action>      → contacts
-<action>{"type":"navigate","route":"/analytics"}</action>     → dashboard & tasks
-<action>{"type":"navigate","route":"/settings"}</action>      → settings
+Navigate:
+<action>{"type":"navigate","route":"/scan"}</action>
+<action>{"type":"navigate","route":"/meetings"}</action>
+<action>{"type":"navigate","route":"/contacts"}</action>
+<action>{"type":"navigate","route":"/analytics"}</action>
+<action>{"type":"navigate","route":"/settings"}</action>
 
-Task actions:
-<action>{"type":"add-task","title":"task name","due":"date or TBD","owner":"name or me"}</action>
-<action>{"type":"complete-task","text":"what the user said they completed"}</action>
+Task management:
+<action>{"type":"add-task","title":"task title","due":"date or TBD","owner":"name or Me"}</action>
+<action>{"type":"complete-task","text":"what user said they completed"}</action>
 
 Rules:
-- Be conversational, warm, concise. Max 2-3 sentences unless asked for more.
-- Always respond in the same language the user uses.
-- If user asks to open something, navigate AND briefly confirm ("Opening card scanner now!").
-- If user adds a task, confirm it ("Got it, added that to your tasks!").
-- If user says they completed something, mark it done and confirm.
-- Answer general questions (productivity tips, email advice, etc.) normally without any action tag.
-- If unsure what feature they need, ask a clarifying question.
+- Be warm, smart, concise. Max 2-3 sentences for simple replies.
+- Keep context across the conversation — remember what was said earlier.
+- If user says "add a task", "remind me to", "follow up with X" → use add-task action.
+- If user says "done with X", "completed X", "finished X" → use complete-task action.
+- If user asks to open a page, navigate AND confirm in text.
+- For general questions (email tips, productivity, etc.) — just answer naturally, no action needed.
+- Always confirm actions: "Got it, added to your tasks!" / "Opening card scanner now!"
 - Never say you can't do something if it's in your feature list.`
 
-const ACTIONS = [
-  { icon: 'ti-id',         label: 'Scan visiting card',    sub: 'Extract contact + draft email',  route: '/scan',      bg: '#fef3c7', color: '#92400e' },
-  { icon: 'ti-microphone', label: 'Record meeting',         sub: 'Transcribe + generate MOM',       route: '/meetings',  bg: '#fee2e2', color: '#991b1b' },
-  { icon: 'ti-chart-bar',  label: 'Dashboard & tasks',      sub: 'Track action items + priorities', route: '/analytics', bg: '#ede9fe', color: '#5b21b6' },
+const QUICK_ACTIONS = [
+  { icon:'ti-id',         label:'Scan visiting card',   sub:'Extract + draft email',        route:'/scan',      bg:'#fef3c7',color:'#92400e' },
+  { icon:'ti-microphone', label:'Record meeting',        sub:'Transcribe + generate MOM',     route:'/meetings',  bg:'#fee2e2',color:'#991b1b' },
+  { icon:'ti-chart-bar',  label:'Dashboard & tasks',     sub:'Track action items',            route:'/analytics', bg:'#ede9fe',color:'#5b21b6' },
 ]
 
-const QUICK = [
-  { icon: 'ti-id',         label: 'Scan a card',    route: '/scan' },
-  { icon: 'ti-microphone', label: 'Record meeting', route: '/meetings' },
-  { icon: 'ti-chart-bar',  label: 'My tasks',       route: '/analytics' },
-  { icon: 'ti-users',      label: 'Contacts',       route: '/contacts' },
+const CHIPS = [
+  { icon:'ti-id',         label:'Scan a card',    route:'/scan' },
+  { icon:'ti-microphone', label:'Record meeting', route:'/meetings' },
+  { icon:'ti-chart-bar',  label:'My tasks',       route:'/analytics' },
+  { icon:'ti-users',      label:'Contacts',       route:'/contacts' },
 ]
 
 function greeting() {
@@ -57,160 +61,158 @@ function greeting() {
 export default function HomePage({ user }) {
   const firstName = user?.user_metadata?.full_name?.split(' ')[0] || user?.email?.split('@')[0] || 'there'
 
-  const [messages, setMessages] = useState([
-    { id: 1, role: 'tiby', type: 'actions', text: `${greeting()}, ${firstName}! What would you like to do today?` }
-  ])
+  // Restore chat from sessionStorage on mount
+  const [messages, setMessages] = useState(() => {
+    try {
+      const saved = sessionStorage.getItem(STORAGE_KEY)
+      if (saved) return JSON.parse(saved)
+    } catch {}
+    return [{ id: 1, role:'tiby', type:'actions', text:`${greeting()}, ${firstName}! What would you like to do today?` }]
+  })
+
   const [input, setInput]         = useState('')
   const [recording, setRecording] = useState(false)
   const [thinking, setThinking]   = useState(false)
   const [userCtx, setUserCtx]     = useState({})
-  const [history, setHistory]     = useState([]) // Gemini conversation history
+  const [geminiHistory, setGeminiHistory] = useState([]) // Gemini conversation history
 
   const navigate  = useNavigate()
   const { speak } = useSpeech()
   const mrRef     = useRef()
   const chunksRef = useRef([])
   const bottomRef = useRef()
-  const inputRef  = useRef()
+  const streamRef = useRef()
 
   useEffect(() => { getUserContext().then(setUserCtx) }, [])
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
 
-  function addMsg(role, text, type = 'text') {
-    setMessages(m => [...m, { id: Date.now() + Math.random(), role, text, type }])
+  // Persist messages to sessionStorage whenever they change
+  useEffect(() => {
+    try { sessionStorage.setItem(STORAGE_KEY, JSON.stringify(messages.slice(-50))) } catch {}
+  }, [messages])
+
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior:'smooth' }) }, [messages, thinking])
+
+  function addMsg(role, text, type='text') {
+    setMessages(m => [...m, { id:Date.now()+Math.random(), role, text, type }])
   }
 
-  // ── Call Gemini with full conversation history ─────────────────────────────
-  async function callGemini(userText) {
+  // ── Gemini call with conversation history ────────────────────────────────
+  const callGemini = useCallback(async (userText) => {
     const newHistory = [
-      ...history,
-      { role: 'user', parts: [{ text: userText }] }
+      ...geminiHistory,
+      { role:'user', parts:[{ text:userText }] }
     ]
+    // Keep last 20 turns to avoid token limit
+    const trimmed = newHistory.slice(-20)
 
     const res = await fetch(`${GEMINI_API_URL}?key=${GEMINI_KEY}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method:'POST',
+      headers:{ 'Content-Type':'application/json' },
       body: JSON.stringify({
-        system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
-        contents: newHistory,
-        generationConfig: { temperature: 0.7, maxOutputTokens: 500 },
+        system_instruction:{ parts:[{ text:SYSTEM_PROMPT }] },
+        contents: trimmed,
+        generationConfig:{ temperature:0.7, maxOutputTokens:500 },
       }),
     })
-
     const data = await res.json()
-    const reply = data.candidates?.[0]?.content?.parts?.[0]?.text || "I didn't catch that, could you try again?"
+    if (!res.ok) throw new Error(data.error?.message || 'Gemini error')
+    const reply = data.candidates?.[0]?.content?.parts?.[0]?.text || "Sorry, I didn't get that. Try again!"
 
-    // Update history
-    setHistory([
-      ...newHistory,
-      { role: 'model', parts: [{ text: reply }] }
-    ])
-
+    setGeminiHistory([...trimmed, { role:'model', parts:[{ text:reply }] }])
     return reply
-  }
+  }, [geminiHistory])
 
-  // ── Parse and execute action tags ─────────────────────────────────────────
-  async function executeAction(reply) {
-    const actionMatch = reply.match(/<action>(.*?)<\/action>/s)
-    if (!actionMatch) return reply
-
-    const cleanReply = reply.replace(/<action>.*?<\/action>/s, '').trim()
+  // ── Parse and execute action tags ────────────────────────────────────────
+  const executeAction = useCallback(async (reply) => {
+    const match = reply.match(/<action>([\s\S]*?)<\/action>/)
+    const cleanReply = reply.replace(/<action>[\s\S]*?<\/action>/g, '').trim()
+    if (!match) return cleanReply
 
     try {
-      const action = JSON.parse(actionMatch[1])
+      const action = JSON.parse(match[1])
+      const sid = userCtx.sheet_id || null
 
       if (action.type === 'navigate') {
         setTimeout(() => navigate(action.route), 900)
       }
 
-      if (action.type === 'add-task') {
-        // Add task to Apps Script
-        const sid = userCtx.sheet_id || ''
-        fetch(APPS_SCRIPT_URL, {
-          method: 'POST',
+      if (action.type === 'add-task' && sid) {
+        const res = await fetch(APPS_SCRIPT_URL, {
+          method:'POST',
           body: JSON.stringify({
-            action: 'generate-mom', // reuse MOM endpoint to save tasks
-            transcript: `Task: ${action.title}`,
-            meeting_title: 'Manual task',
+            action:'save-task',
+            title: action.title,
+            due:   action.due   || 'TBD',
+            owner: action.owner || 'Me',
             sheet_id: sid,
           }),
-        }).catch(() => {})
-
-        // Actually save directly as a task
-        fetch(APPS_SCRIPT_URL, {
-          method: 'POST',
-          body: JSON.stringify({
-            action:    'save-task',
-            title:     action.title,
-            due:       action.due    || 'TBD',
-            owner:     action.owner  || 'Me',
-            sheet_id:  sid,
-          }),
-        }).catch(() => {})
+        })
+        const data = await res.json()
+        if (data.status !== 'success') {
+          return cleanReply + '\n(Note: Could not save task — check your sheet is set up in Settings)'
+        }
       }
 
-      if (action.type === 'complete-task') {
-        const sid = userCtx.sheet_id || ''
-        fetch(APPS_SCRIPT_URL, {
-          method: 'POST',
-          body: JSON.stringify({ action: 'complete-task', text: action.text, sheet_id: sid }),
-        }).catch(() => {})
+      if (action.type === 'complete-task' && sid) {
+        await fetch(APPS_SCRIPT_URL, {
+          method:'POST',
+          body: JSON.stringify({ action:'complete-task', text:action.text, sheet_id:sid }),
+        }).catch(()=>{})
       }
-    } catch {}
+    } catch(e) { console.warn('Action parse error:', e) }
 
     return cleanReply
-  }
+  }, [userCtx, navigate])
 
-  // ── Handle user message ────────────────────────────────────────────────────
+  // ── Handle user input ──────────────────────────────────────────────────
   async function handleCommand(text) {
     if (!text.trim()) return
     addMsg('user', text)
     setInput('')
     setThinking(true)
-
     try {
-      const rawReply  = await callGemini(text)
+      const rawReply   = await callGemini(text)
       const cleanReply = await executeAction(rawReply)
       addMsg('tiby', cleanReply)
       speak(cleanReply.slice(0, 200))
     } catch(e) {
-      addMsg('tiby', "Sorry, something went wrong. Try again!")
-    } finally {
-      setThinking(false)
-    }
+      console.error(e)
+      addMsg('tiby', "Something went wrong — check your connection and try again.")
+    } finally { setThinking(false) }
   }
 
-  // ── Voice recording ────────────────────────────────────────────────────────
+  // ── Voice recording ────────────────────────────────────────────────────
   async function startRecording() {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const stream = await navigator.mediaDevices.getUserMedia({ audio:true })
+      streamRef.current = stream
       chunksRef.current = []
       const mr = new MediaRecorder(stream)
       mrRef.current = mr
       mr.ondataavailable = e => chunksRef.current.push(e.data)
       mr.onstop = async () => {
         stream.getTracks().forEach(t => t.stop())
-        const blob = new Blob(chunksRef.current, { type: 'audio/webm' })
+        streamRef.current = null
+        const blob = new Blob(chunksRef.current, { type:'audio/webm' })
         setThinking(true)
         try {
-          const API_URL = import.meta.env.VITE_API_URL || 'https://tiby.onrender.com/api/v1'
           const form = new FormData()
           form.append('file', blob, 'voice.webm')
-          const res  = await fetch(`${API_URL}/voice/transcribe`, { method: 'POST', body: form })
+          const res  = await fetch(`${API_URL}/voice/transcribe`, { method:'POST', body:form })
           const data = await res.json()
           if (data.transcript) await handleCommand(data.transcript)
-          else addMsg('tiby', "I didn't catch that. Try typing instead!")
-        } catch {
-          addMsg('tiby', "Couldn't transcribe. Try typing!")
-        } finally { setThinking(false) }
+          else addMsg('tiby', "I didn't catch that. Try again or type it!")
+        } catch { addMsg('tiby', "Couldn't transcribe. Try typing instead!") }
+        finally { setThinking(false) }
       }
       mr.start(); setRecording(true)
-    } catch {
-      addMsg('tiby', "Microphone access denied. Please type your request.")
-    }
+    } catch { addMsg('tiby', "Microphone access denied. Please type your request.") }
   }
 
-  function stopRecording() { mrRef.current?.stop(); setRecording(false) }
+  function stopRecording() {
+    setTimeout(() => { try { mrRef.current?.stop() } catch {} }, 100)
+    setRecording(false)
+  }
 
   return (
     <div style={{ display:'flex', flexDirection:'column', height:'100%', background:'#f9f9f8' }}>
@@ -229,11 +231,10 @@ export default function HomePage({ user }) {
               <div className="t-bubble">{msg.text}</div>
             </div>
 
-            {/* Action cards on first message */}
             {msg.type==='actions' && (
               <div style={{ marginLeft:37, marginTop:8 }}>
                 <div style={{ border:'1px solid #f0f0ef', borderRadius:12, overflow:'hidden', background:'#fff' }}>
-                  {ACTIONS.map((a,i) => (
+                  {QUICK_ACTIONS.map((a,i) => (
                     <button key={i} className="t-action-row" onClick={()=>navigate(a.route)}>
                       <div className="t-action-row-icon" style={{ background:a.bg, color:a.color }}>
                         <i className={`ti ${a.icon}`} aria-hidden="true"/>
@@ -247,7 +248,7 @@ export default function HomePage({ user }) {
                   ))}
                 </div>
                 <div className="t-chips" style={{ marginTop:10 }}>
-                  {QUICK.map(q => (
+                  {CHIPS.map(q => (
                     <button key={q.label} className="t-chip" onClick={()=>navigate(q.route)}>
                       <i className={`ti ${q.icon}`} aria-hidden="true"/>
                       {q.label}
@@ -270,15 +271,14 @@ export default function HomePage({ user }) {
         <div ref={bottomRef}/>
       </div>
 
-      {/* Input bar */}
+      {/* Input */}
       <div className="t-input-bar">
         <div className="t-input-wrap">
           <input
-            ref={inputRef}
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={e => { if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();handleCommand(input)} }}
-            placeholder={recording ? 'Listening…' : 'Ask Tiby anything…'}
+            placeholder={recording?'Listening…':'Ask Tiby anything…'}
             disabled={recording||thinking}
           />
           <button
