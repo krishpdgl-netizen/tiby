@@ -1,19 +1,19 @@
 import { useState, useEffect, useCallback } from 'react'
-import { BrowserRouter, Routes, Route, NavLink, useNavigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { Toaster } from 'react-hot-toast'
 
-import LoginPage      from './pages/LoginPage'
-import HomePage       from './pages/HomePage'
+import LoginPage       from './pages/LoginPage'
+import HomePage        from './pages/HomePage'
 import CardScannerPage from './pages/CardScannerPage'
-import MeetingPage    from './pages/MeetingPage'
-import ContactsPage   from './pages/ContactsPage'
-import SettingsPage   from './pages/SettingsPage'
-import WakeWordOverlay from './components/WakeWordOverlay'
-import { useWakeWord }      from './hooks/useWakeWord'
-import { useCommandRouter } from './hooks/useCommandRouter'
-import { usePWAInstall }    from './hooks/usePWAInstall'
+import MeetingPage     from './pages/MeetingPage'
+import ContactsPage    from './pages/ContactsPage'
 import AnalyticsPage   from './pages/AnalyticsPage'
+import SettingsPage    from './pages/SettingsPage'
+import WakeWordOverlay from './components/WakeWordOverlay'
+import { useWakeWord }   from './hooks/useWakeWord'
+import { usePWAInstall } from './hooks/usePWAInstall'
 import { supabase, signOut } from './services/supabase'
+import { clearUserContextCache } from './services/userProfile'
 
 const NAV = [
   { to:'/home',      icon:'ti-home',       label:'Home' },
@@ -35,23 +35,21 @@ const PAGE_META = {
 
 function AppInner({ user }) {
   const [overlayOpen, setOverlayOpen] = useState(false)
-  const { route }  = useCommandRouter()
   const { canInstall, isInstalled, install } = usePWAInstall()
-  const navigate   = useNavigate()
-  const [path, setPath] = useState(window.location.pathname)
-
-  useEffect(() => {
-    const handler = () => setPath(window.location.pathname)
-    window.addEventListener('popstate', handler)
-    return () => window.removeEventListener('popstate', handler)
-  }, [])
+  const navigate  = useNavigate()
+  const location  = useLocation()
 
   const handleWake    = useCallback(() => setOverlayOpen(true), [])
-  const handleCommand = useCallback((t) => { setOverlayOpen(false); route(t) }, [route])
+  const handleCommand = useCallback((t) => {
+    setOverlayOpen(false)
+    // Route voice commands to home page chat via navigation state
+    navigate('/home', { state: { voiceCommand: t } })
+  }, [navigate])
 
   const { isListening, wakeDetected } = useWakeWord({ onWake: handleWake, enabled: false })
 
-  const meta = PAGE_META[path] || PAGE_META['/home']
+  const path   = location.pathname
+  const meta   = PAGE_META[path] || PAGE_META['/home']
   const isHome = path === '/home' || path === '/'
 
   function initials(u) {
@@ -62,34 +60,21 @@ function AppInner({ user }) {
   return (
     <div className="tiby-shell">
 
-      {/* ── Sidebar ── */}
+      {/* Sidebar */}
       <aside className="tiby-sidebar">
         <div className="t-logo">T</div>
-
         {NAV.map(({to,icon,label}) => (
-          <NavLink key={to} to={to} className={({isActive})=>`t-nav-item ${isActive?'active':''}`}
-            title={label} onClick={()=>setPath(to)}>
+          <NavLink key={to} to={to} className={({isActive})=>`t-nav-item ${isActive?'active':''}`} title={label}>
             <i className={`ti ${icon}`} aria-hidden="true"/>
           </NavLink>
         ))}
-
         <div className="t-nav-spacer"/>
-
-        {/* Wake dot */}
-        <div title={wakeDetected?'Woke!':isListening?'Listening for Hey Tiby':'Wake word off'}
-          style={{width:7,height:7,borderRadius:'50%',marginBottom:8,
-            background:wakeDetected?'#10b981':isListening?'#3b82f6':'#e5e5e4',
-            transition:'background .3s'}}/>
-
-        {/* Install */}
         {canInstall && !isInstalled && (
           <button onClick={install} title="Install Tiby"
             style={{background:'none',border:'none',cursor:'pointer',color:'#9ca3af',fontSize:18,padding:4}}>
             <i className="ti ti-download" aria-hidden="true"/>
           </button>
         )}
-
-        {/* Avatar */}
         <div className="t-avatar" title="Settings" onClick={()=>navigate('/settings')}>
           {user?.user_metadata?.avatar_url
             ? <img src={user.user_metadata.avatar_url} alt=""/>
@@ -98,13 +83,11 @@ function AppInner({ user }) {
         </div>
       </aside>
 
-      {/* ── Main ── */}
+      {/* Main */}
       <div className="tiby-main">
-
-        {/* Topbar — hide on home */}
         {!isHome && (
           <div className="t-topbar">
-            <div className="t-page-icon" style={{ background: meta.bg, color: meta.color }}>
+            <div className="t-page-icon" style={{ background:meta.bg, color:meta.color }}>
               <i className={`ti ${meta.icon}`} aria-hidden="true"/>
             </div>
             <div>
@@ -120,7 +103,6 @@ function AppInner({ user }) {
           </div>
         )}
 
-        {/* Routes */}
         <div style={{flex:1,overflow:'hidden',display:'flex',flexDirection:'column'}}>
           <Routes>
             <Route path="/"         element={<HomePage user={user}/>}/>
@@ -133,10 +115,9 @@ function AppInner({ user }) {
           </Routes>
         </div>
 
-        {/* Bottom nav — mobile only */}
         <nav className="t-bottom-nav">
           {NAV.map(({to,icon,label})=>(
-            <NavLink key={to} to={to} className={({isActive})=>isActive?'active':''} onClick={()=>setPath(to)}>
+            <NavLink key={to} to={to} className={({isActive})=>isActive?'active':''}>
               <i className={`ti ${icon}`} aria-hidden="true"/>
               {label}
             </NavLink>
@@ -144,28 +125,28 @@ function AppInner({ user }) {
         </nav>
       </div>
 
-      {/* Wake overlay */}
       {overlayOpen && <WakeWordOverlay onCommand={handleCommand} onDismiss={()=>setOverlayOpen(false)}/>}
-
       <Toaster position="top-center"/>
     </div>
   )
 }
 
 export default function App() {
-  const [user, setUser]   = useState(null)
-  const [ready, setReady] = useState(false)
+  const [user, setUser]           = useState(null)
+  const [ready, setReady]         = useState(false)
+  const [setupMsg, setSetupMsg]   = useState('')
 
   useEffect(() => {
-    supabase.auth.getSession().then(async ({data:{session}})=>{
+    supabase.auth.getSession().then(async ({data:{session}}) => {
       const u = session?.user ?? null
       setUser(u)
-      // Auto-create personal sheet if user doesn't have one yet
+
       if (u && !u.user_metadata?.sheet_id) {
+        setSetupMsg('Setting up your workspace…')
         try {
           const APPS_SCRIPT_URL = import.meta.env.VITE_APPS_SCRIPT_URL || ''
           const res  = await fetch(APPS_SCRIPT_URL, {
-            method: 'POST',
+            method:'POST',
             body: JSON.stringify({
               action: 'create-user-sheet',
               email:  u.email,
@@ -174,26 +155,29 @@ export default function App() {
           })
           const data = await res.json()
           if (data.sheet_id) {
-            await supabase.auth.updateUser({ data: { ...u.user_metadata, sheet_id: data.sheet_id } })
-            // Reload user so sheet_id is available immediately
-            const { data: { user: freshUser } } = await supabase.auth.getUser()
-            setUser(freshUser)
+            await supabase.auth.updateUser({ data:{ ...u.user_metadata, sheet_id:data.sheet_id } })
+            clearUserContextCache()
+            const { data:{ user:fresh } } = await supabase.auth.getUser()
+            setUser(fresh)
           }
-        } catch(e) { console.warn('Could not create personal sheet:', e) }
+        } catch(e) { console.warn('Sheet creation failed:', e) }
+        setSetupMsg('')
       }
       setReady(true)
     })
-    const {data:{subscription}} = supabase.auth.onAuthStateChange((_,session)=>{
+
+    const {data:{subscription}} = supabase.auth.onAuthStateChange((_,session) => {
       setUser(session?.user??null)
+      clearUserContextCache()
     })
-    return ()=>subscription.unsubscribe()
+    return () => subscription.unsubscribe()
   }, [])
 
   if (!ready) return (
     <div style={{height:'100dvh',display:'flex',alignItems:'center',justifyContent:'center',background:'#f9f9f8'}}>
       <div style={{textAlign:'center'}}>
         <div style={{width:44,height:44,borderRadius:12,background:'#1a1a1a',display:'flex',alignItems:'center',justifyContent:'center',fontSize:19,fontWeight:600,color:'#fff',margin:'0 auto 12px'}}>T</div>
-        <div style={{fontSize:13,color:'#9ca3af'}}>Loading…</div>
+        <div style={{fontSize:13,color:'#9ca3af'}}>{setupMsg||'Loading…'}</div>
       </div>
     </div>
   )
