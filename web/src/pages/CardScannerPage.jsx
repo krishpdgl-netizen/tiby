@@ -1,6 +1,7 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { transcribeVoice } from '../services/api'
 import { useSpeech } from '../hooks/useSpeech'
+import { getUserContext } from '../services/userProfile'
 
 const APPS_SCRIPT_URL = import.meta.env.VITE_APPS_SCRIPT_URL || ''
 const API_URL = import.meta.env.VITE_API_URL || 'https://tiby.onrender.com/api/v1'
@@ -8,6 +9,9 @@ const STEP = { SCAN: 0, VOICE: 1, DRAFT: 2, SENT: 3 }
 
 export default function CardScannerPage() {
   const [step, setStep]               = useState(STEP.SCAN)
+  const [userCtx, setUserCtx]         = useState({})
+
+  useEffect(() => { getUserContext().then(setUserCtx) }, [])
   const [armed, setArmed]             = useState(false)
   const [dot, setDot]                 = useState('idle')
   const [status, setStatus]           = useState('Ready to scan')
@@ -58,7 +62,7 @@ export default function CardScannerPage() {
     setDot('active'); setStatus('Reading card…')
     try {
       const enc = await b64(blob)
-      const res = await fetch(APPS_SCRIPT_URL,{ method:'POST', body:JSON.stringify({ image_base64:enc, image_mime:'image/jpeg', image_filename:'card.jpg' }) })
+      const res = await fetch(APPS_SCRIPT_URL,{ method:'POST', body:JSON.stringify({ image_base64:enc, image_mime:'image/jpeg', image_filename:'card.jpg', sheet_id: userCtx.sheet_id }) })
       const data = await res.json()
       if (data.status==='success') {
         setExtracted(data.fields||{}); setDriveUrl(data.drive_url)
@@ -93,7 +97,7 @@ export default function CardScannerPage() {
     if (!instruction.trim()) return toast('Tell me what to write first','error')
     setLoading(true)
     try {
-      const res = await fetch(APPS_SCRIPT_URL,{method:'POST',body:JSON.stringify({action:'draft-email',contact,voice_instruction:instruction})})
+      const res = await fetch(APPS_SCRIPT_URL,{method:'POST',body:JSON.stringify({action:'draft-email',contact,voice_instruction:instruction,sender:userCtx.sender||{},sheet_id:userCtx.sheet_id})})
       const data = await res.json()
       if (data.status!=='success') throw new Error(data.message)
       setDraft(data); setStep(STEP.DRAFT)
@@ -108,6 +112,12 @@ export default function CardScannerPage() {
       const res = await fetch(`${API_URL}/emails/send-quick`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to_email:contact.email,subject:draft.subject,body:draft.body})})
       const data = await res.json()
       setSendResult(data); setStep(STEP.SENT)
+      // Save as email pattern for self-improvement
+      fetch(APPS_SCRIPT_URL,{method:'POST',body:JSON.stringify({
+        action:'save-email', sheet_id:userCtx.sheet_id,
+        instruction, subject:draft.subject, body:draft.body,
+        contact_name:contact.name, contact_company:contact.company,
+      })}).catch(()=>{})
     } catch { toast('Failed to send','error') }
     finally { setSending(false) }
   }
