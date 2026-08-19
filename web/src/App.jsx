@@ -157,8 +157,31 @@ export default function App() {
   const [ready, setReady] = useState(false)
 
   useEffect(() => {
-    supabase.auth.getSession().then(({data:{session}})=>{
-      setUser(session?.user??null); setReady(true)
+    supabase.auth.getSession().then(async ({data:{session}})=>{
+      const u = session?.user ?? null
+      setUser(u)
+      // Auto-create personal sheet if user doesn't have one yet
+      if (u && !u.user_metadata?.sheet_id) {
+        try {
+          const APPS_SCRIPT_URL = import.meta.env.VITE_APPS_SCRIPT_URL || ''
+          const res  = await fetch(APPS_SCRIPT_URL, {
+            method: 'POST',
+            body: JSON.stringify({
+              action: 'create-user-sheet',
+              email:  u.email,
+              name:   u.user_metadata?.full_name || u.email,
+            }),
+          })
+          const data = await res.json()
+          if (data.sheet_id) {
+            await supabase.auth.updateUser({ data: { ...u.user_metadata, sheet_id: data.sheet_id } })
+            // Reload user so sheet_id is available immediately
+            const { data: { user: freshUser } } = await supabase.auth.getUser()
+            setUser(freshUser)
+          }
+        } catch(e) { console.warn('Could not create personal sheet:', e) }
+      }
+      setReady(true)
     })
     const {data:{subscription}} = supabase.auth.onAuthStateChange((_,session)=>{
       setUser(session?.user??null)
