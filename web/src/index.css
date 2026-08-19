@@ -2,32 +2,182 @@
 @tailwind components;
 @tailwind utilities;
 
-@layer components {
-  .input {
-    @apply w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm outline-none
-           focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 transition-all
-           bg-white placeholder-gray-400;
-  }
-
-  .card {
-    @apply bg-white rounded-2xl border border-gray-100 shadow-sm p-4;
-  }
-
-  .btn-primary {
-    @apply inline-flex items-center justify-center gap-2 rounded-xl bg-indigo-600 text-white
-           px-4 py-2.5 text-sm font-medium hover:bg-indigo-700 active:scale-95
-           disabled:opacity-50 disabled:cursor-not-allowed transition-all;
-  }
-
-  .btn-secondary {
-    @apply inline-flex items-center justify-center gap-2 rounded-xl bg-gray-100 text-gray-700
-           px-4 py-2.5 text-sm font-medium hover:bg-gray-200 active:scale-95
-           disabled:opacity-50 transition-all;
-  }
-
-  .btn-danger {
-    @apply inline-flex items-center justify-center gap-2 rounded-xl bg-red-500 text-white
-           px-4 py-2.5 text-sm font-medium hover:bg-red-600 active:scale-95
-           disabled:opacity-50 transition-all;
-  }
+/* ── LCS design tokens ──────────────────────────────────── */
+:root {
+  --navy:   #1B2A4A;
+  --accent: #3E7BFA;
+  --ice:    #EAF0FB;
+  --gray:   #5B6472;
+  --green:  #2FA36B;
+  --red:    #D65A56;
 }
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  background: #f5f7fa;
+  color: var(--navy);
+  -webkit-font-smoothing: antialiased;
+  padding-bottom: env(safe-area-inset-bottom, 24px);
+}
+
+/* ── Layout ─────────────────────────────────────────────── */
+.wrap {
+  max-width: 520px;
+  margin: 0 auto;
+  padding: 0 16px 80px;
+}
+
+/* ── Stepper ─────────────────────────────────────────────── */
+.stepper {
+  display: flex;
+  align-items: flex-start;
+  margin: 20px 0 20px;
+  padding: 0 4px;
+}
+.step {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  position: relative;
+}
+.step::after {
+  content: "";
+  position: absolute;
+  top: 13px;
+  left: calc(50% + 16px);
+  right: calc(-50% + 16px);
+  height: 1px;
+  background: #DCE6F7;
+  transition: background .3s;
+}
+.step:last-child::after { display: none; }
+.step.done::after { background: var(--green); }
+.step-node {
+  width: 26px; height: 26px;
+  border-radius: 50%;
+  border: 1.5px solid #DCE6F7;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #B0BDD0;
+  transition: all .25s;
+  position: relative;
+  z-index: 1;
+}
+.step.active .step-node { border-color: var(--accent); color: var(--accent); background: var(--ice); }
+.step.done  .step-node  { border-color: var(--green); background: var(--green); color: #fff; }
+.step-name {
+  font-size: 10px;
+  font-weight: 600;
+  color: #B0BDD0;
+  letter-spacing: .3px;
+  text-transform: uppercase;
+}
+.step.active .step-name { color: var(--accent); }
+.step.done   .step-name { color: var(--green); }
+
+/* ── Card ────────────────────────────────────────────────── */
+.lcs-card {
+  background: #fff;
+  border-radius: 16px;
+  padding: 20px;
+  margin-bottom: 12px;
+  box-shadow: 0 1px 4px rgba(27,42,74,.06), 0 4px 16px rgba(27,42,74,.07);
+  border: 1px solid transparent;
+  transition: border-color .2s;
+}
+.lcs-card.is-active { border-color: var(--accent); box-shadow: 0 1px 4px rgba(27,42,74,.06), 0 4px 20px rgba(62,123,250,.12); }
+.lcs-card.is-done   { border-color: #C8EDD9; }
+
+.card-head { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+.card-icon {
+  width: 40px; height: 40px;
+  border-radius: 12px;
+  background: var(--ice);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.card-title { font-size: 15px; font-weight: 700; color: var(--navy); letter-spacing: -.2px; }
+.card-sub   { font-size: 12px; color: var(--gray); margin-top: 1px; }
+
+/* ── Buttons ─────────────────────────────────────────────── */
+.btn {
+  border: none;
+  border-radius: 24px;
+  padding: 13px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: #fff;
+  width: 100%;
+  margin-top: 10px;
+  -webkit-tap-highlight-color: transparent;
+  transition: opacity .15s;
+}
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn-scan   { background: var(--navy); }
+.btn-record { background: var(--accent); }
+.btn-stop   { background: var(--red); }
+.btn-submit { background: var(--green); padding: 15px; font-size: 15px; }
+.btn-done   { background: var(--green); }
+
+/* ── Status row ──────────────────────────────────────────── */
+.status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 13px;
+  font-size: 12.5px;
+  color: var(--gray);
+  min-height: 18px;
+}
+.dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: #C7D3EA;
+  flex-shrink: 0;
+  transition: background .2s;
+}
+.dot.active { background: var(--red); animation: pulse 1s infinite; }
+.dot.done   { background: var(--green); }
+.dot.warn   { background: #F59E0B; }
+@keyframes pulse { 50% { opacity: .3; } }
+
+/* ── Extracted block ─────────────────────────────────────── */
+.extracted {
+  display: none;
+  margin-top: 14px;
+  background: #F4FBF7;
+  border: 1px solid #C8EDD9;
+  border-radius: 12px;
+  padding: 14px;
+}
+.extracted.show { display: block; }
+.extracted-head {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--green);
+  letter-spacing: .4px;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+.ef-row { display: flex; gap: 10px; font-size: 13px; margin-bottom: 6px; }
+.ef-row:last-child { margin-bottom: 0; }
+.ef-key { min-width: 58px; font-weight: 600; color: var(--gray); flex-shrink: 0; font-size: 12px; }
+.ef-val { color: var(--navy); word-break: break-all; flex: 1; }
+
+/* ── Video wrap ──────────────────────────────────────────── */
+.video-wrap { position: relative; }
