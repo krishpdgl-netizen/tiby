@@ -197,6 +197,7 @@ body {
   background: #fff; border-top: 1px solid #f0f0ef;
   display: none;
   padding-bottom: env(safe-area-inset-bottom, 0);
+  z-index: 20;
 }
 @media (max-width: 640px) {
   .tiby-sidebar { display: none; }
@@ -210,6 +211,15 @@ body {
   .t-bottom-nav a.active { color: #1a1a1a; }
   .t-bottom-nav i { font-size: 20px; }
   .t-content { padding-bottom: 100px; }
+  /* Push input bar above bottom nav on home page */
+  .tiby-main { padding-bottom: 60px; }
+  .t-input-bar {
+    position: fixed;
+    bottom: 57px; /* height of bottom nav */
+    left: 0; right: 0;
+    z-index: 19;
+    border-top: 1px solid #f0f0ef;
+  }
 }
 
 /* Chat bubble */
