@@ -1,175 +1,181 @@
-import { useState, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { BrowserRouter, Routes, Route, NavLink, useNavigate } from 'react-router-dom'
-import { Toaster, toast } from 'react-hot-toast'
-import { Camera, Mic, Users, Settings, Download } from 'lucide-react'
+import { Toaster } from 'react-hot-toast'
 
+import LoginPage      from './pages/LoginPage'
+import HomePage       from './pages/HomePage'
 import CardScannerPage from './pages/CardScannerPage'
-import MeetingPage from './pages/MeetingPage'
+import MeetingPage    from './pages/MeetingPage'
+import ContactsPage   from './pages/ContactsPage'
+import SettingsPage   from './pages/SettingsPage'
 import WakeWordOverlay from './components/WakeWordOverlay'
-import { useWakeWord } from './hooks/useWakeWord'
+import { useWakeWord }      from './hooks/useWakeWord'
 import { useCommandRouter } from './hooks/useCommandRouter'
-import { usePWAInstall } from './hooks/usePWAInstall'
+import { usePWAInstall }    from './hooks/usePWAInstall'
+import { supabase, signOut } from './services/supabase'
 
 const NAV = [
-  { to: '/', icon: Camera, label: 'Scan Card' },
-  { to: '/meetings', icon: Mic, label: 'Meetings' },
-  { to: '/contacts', icon: Users, label: 'Contacts' },
-  { to: '/settings', icon: Settings, label: 'Settings' },
+  { to:'/home',     icon:'ti-home',       label:'Home' },
+  { to:'/scan',     icon:'ti-id',         label:'Scan' },
+  { to:'/meetings', icon:'ti-microphone', label:'Meetings' },
+  { to:'/contacts', icon:'ti-users',      label:'Contacts' },
+  { to:'/settings', icon:'ti-settings',   label:'Settings' },
 ]
 
-/* Inner component has access to useNavigate (must be inside BrowserRouter) */
-function AppInner() {
-  const [overlayOpen, setOverlayOpen] = useState(false)
-  const { route } = useCommandRouter()
-  const { canInstall, isInstalled, install } = usePWAInstall()
-
-  const handleWake = useCallback(() => {
-    setOverlayOpen(true)
-  }, [])
-
-  const handleCommand = useCallback((transcript) => {
-    setOverlayOpen(false)
-    route(transcript)
-  }, [route])
-
-  const { isListening, isSupported, wakeDetected, triggerManually } = useWakeWord({
-    onWake: handleWake,
-    enabled: !overlayOpen,   // pause wake detection while overlay is open
-  })
-
-  return (
-    <div className="min-h-screen bg-gray-50 flex flex-col">
-      {/* Header */}
-      <header className="bg-white border-b border-gray-100 px-4 py-3 flex items-center gap-3">
-        <div className="w-7 h-7 bg-indigo-600 rounded-lg flex items-center justify-center">
-          <span className="text-white text-xs font-bold">T</span>
-        </div>
-        <span className="font-semibold text-gray-900">Tiby</span>
-
-        <div className="ml-auto flex items-center gap-2">
-          {/* Wake word status dot */}
-          {isSupported && (
-            <div className="flex items-center gap-1.5" title="Wake word active — say 'Hey Tiby'">
-              <div className={`w-2 h-2 rounded-full transition-colors ${
-                wakeDetected  ? 'bg-green-400 animate-ping' :
-                isListening   ? 'bg-indigo-400 animate-pulse' :
-                                'bg-gray-300'
-              }`} />
-              <span className="text-xs text-gray-400 hidden sm:inline">
-                {wakeDetected ? 'Woke!' : isListening ? 'Listening' : 'Hey Tiby'}
-              </span>
-            </div>
-          )}
-
-          {/* Mic button — manual trigger */}
-          <button
-            onClick={() => setOverlayOpen(true)}
-            className={`p-2 rounded-xl transition-colors ${
-              overlayOpen ? 'bg-indigo-100 text-indigo-600' : 'text-gray-400 hover:text-indigo-600 hover:bg-indigo-50'
-            }`}
-            title="Tap to speak"
-          >
-            <Mic size={18} />
-          </button>
-
-          {/* Install button */}
-          {canInstall && !isInstalled && (
-            <button
-              onClick={install}
-              className="flex items-center gap-1.5 text-xs bg-indigo-50 text-indigo-600 px-2.5 py-1.5 rounded-lg hover:bg-indigo-100 transition-colors"
-            >
-              <Download size={13} />
-              Install
-            </button>
-          )}
-        </div>
-      </header>
-
-      {/* Page content */}
-      <main className="flex-1 pb-20 overflow-y-auto">
-        <Routes>
-          <Route path="/" element={<CardScannerPage />} />
-          <Route path="/meetings" element={<MeetingPage />} />
-          <Route path="/contacts" element={<div className="p-4 text-gray-500">Contacts — coming soon</div>} />
-          <Route path="/settings" element={<SettingsPage />} />
-        </Routes>
-      </main>
-
-      {/* Bottom nav */}
-      <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-100 flex safe-bottom">
-        {NAV.map(({ to, icon: Icon, label }) => (
-          <NavLink
-            key={to}
-            to={to}
-            end={to === '/'}
-            className={({ isActive }) =>
-              `flex-1 flex flex-col items-center py-3 gap-1 text-xs transition-colors ${
-                isActive ? 'text-indigo-600' : 'text-gray-400 hover:text-gray-600'
-              }`
-            }
-          >
-            <Icon size={20} />
-            {label}
-          </NavLink>
-        ))}
-      </nav>
-
-      {/* Wake word overlay */}
-      {overlayOpen && (
-        <WakeWordOverlay
-          onCommand={handleCommand}
-          onDismiss={() => setOverlayOpen(false)}
-        />
-      )}
-
-      {/* Toast notifications */}
-      <Toaster position="top-center" toastOptions={{ duration: 3000 }} />
-    </div>
-  )
+const PAGE_META = {
+  '/home':     { icon:'ti-home',       bg:'#f5f5f4', color:'#6b7280', title:'Home',        sub:'Ask Tiby anything' },
+  '/scan':     { icon:'ti-id',         bg:'#fef3c7', color:'#92400e', title:'Card scanner', sub:'Scan → extract → email' },
+  '/meetings': { icon:'ti-microphone', bg:'#fee2e2', color:'#991b1b', title:'Meetings',     sub:'Record or scan notes' },
+  '/contacts': { icon:'ti-users',      bg:'#dbeafe', color:'#1e40af', title:'Contacts',     sub:'Your saved contacts' },
+  '/settings': { icon:'ti-settings',   bg:'#f5f5f4', color:'#6b7280', title:'Settings',     sub:'Account and preferences' },
 }
 
-function SettingsPage() {
-  const connectGmail = async () => {
-    const { data } = await import('./services/api').then((m) => m.getGmailAuthUrl())
-    window.location.href = data.auth_url
+function AppInner({ user }) {
+  const [overlayOpen, setOverlayOpen] = useState(false)
+  const { route }  = useCommandRouter()
+  const { canInstall, isInstalled, install } = usePWAInstall()
+  const navigate   = useNavigate()
+  const [path, setPath] = useState(window.location.pathname)
+
+  useEffect(() => {
+    const handler = () => setPath(window.location.pathname)
+    window.addEventListener('popstate', handler)
+    return () => window.removeEventListener('popstate', handler)
+  }, [])
+
+  const handleWake    = useCallback(() => setOverlayOpen(true), [])
+  const handleCommand = useCallback((t) => { setOverlayOpen(false); route(t) }, [route])
+
+  const { isListening, wakeDetected } = useWakeWord({ onWake: handleWake, enabled: !overlayOpen })
+
+  const meta = PAGE_META[path] || PAGE_META['/home']
+  const isHome = path === '/home' || path === '/'
+
+  function initials(u) {
+    const n = u?.user_metadata?.full_name || u?.email || 'U'
+    return n.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase()
   }
-  const params = new URLSearchParams(window.location.search)
-  const gmailConnected = params.get('gmail') === 'connected'
 
   return (
-    <div className="max-w-lg mx-auto p-4 space-y-6">
-      <h1 className="text-2xl font-semibold">Settings</h1>
-      <div className="card space-y-3">
-        <h2 className="font-medium">Gmail</h2>
-        {gmailConnected ? (
-          <div className="flex items-center gap-2 text-green-600 text-sm">
-            <div className="w-2 h-2 bg-green-500 rounded-full" />Connected
-          </div>
-        ) : (
-          <>
-            <p className="text-sm text-gray-500">Connect Gmail so Tiby can send emails on your behalf.</p>
-            <button onClick={connectGmail} className="btn-primary">Connect Gmail</button>
-          </>
+    <div className="tiby-shell">
+
+      {/* ── Sidebar ── */}
+      <aside className="tiby-sidebar">
+        <div className="t-logo">T</div>
+
+        {NAV.map(({to,icon,label}) => (
+          <NavLink key={to} to={to} className={({isActive})=>`t-nav-item ${isActive?'active':''}`}
+            title={label} onClick={()=>setPath(to)}>
+            <i className={`ti ${icon}`} aria-hidden="true"/>
+          </NavLink>
+        ))}
+
+        <div className="t-nav-spacer"/>
+
+        {/* Wake dot */}
+        <div title={wakeDetected?'Woke!':isListening?'Listening for Hey Tiby':'Wake word off'}
+          style={{width:7,height:7,borderRadius:'50%',marginBottom:8,
+            background:wakeDetected?'#10b981':isListening?'#3b82f6':'#e5e5e4',
+            transition:'background .3s'}}/>
+
+        {/* Install */}
+        {canInstall && !isInstalled && (
+          <button onClick={install} title="Install Tiby"
+            style={{background:'none',border:'none',cursor:'pointer',color:'#9ca3af',fontSize:18,padding:4}}>
+            <i className="ti ti-download" aria-hidden="true"/>
+          </button>
         )}
+
+        {/* Avatar */}
+        <div className="t-avatar" title="Settings" onClick={()=>navigate('/settings')}>
+          {user?.user_metadata?.avatar_url
+            ? <img src={user.user_metadata.avatar_url} alt=""/>
+            : initials(user)
+          }
+        </div>
+      </aside>
+
+      {/* ── Main ── */}
+      <div className="tiby-main">
+
+        {/* Topbar — hide on home */}
+        {!isHome && (
+          <div className="t-topbar">
+            <div className="t-page-icon" style={{ background: meta.bg, color: meta.color }}>
+              <i className={`ti ${meta.icon}`} aria-hidden="true"/>
+            </div>
+            <div>
+              <div className="t-page-title">{meta.title}</div>
+              <div className="t-page-sub">{meta.sub}</div>
+            </div>
+            <div style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:8}}>
+              <button onClick={()=>setOverlayOpen(true)}
+                style={{background:'none',border:'none',cursor:'pointer',color:'#9ca3af',fontSize:20,padding:4,display:'flex'}}>
+                <i className="ti ti-microphone" aria-hidden="true"/>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Routes */}
+        <div style={{flex:1,overflow:'hidden',display:'flex',flexDirection:'column'}}>
+          <Routes>
+            <Route path="/"         element={<HomePage user={user}/>}/>
+            <Route path="/home"     element={<HomePage user={user}/>}/>
+            <Route path="/scan"     element={<CardScannerPage/>}/>
+            <Route path="/meetings" element={<MeetingPage/>}/>
+            <Route path="/contacts" element={<ContactsPage/>}/>
+            <Route path="/settings" element={<SettingsPage user={user}/>}/>
+          </Routes>
+        </div>
+
+        {/* Bottom nav — mobile only */}
+        <nav className="t-bottom-nav">
+          {NAV.map(({to,icon,label})=>(
+            <NavLink key={to} to={to} className={({isActive})=>isActive?'active':''} onClick={()=>setPath(to)}>
+              <i className={`ti ${icon}`} aria-hidden="true"/>
+              {label}
+            </NavLink>
+          ))}
+        </nav>
       </div>
-      <div className="card space-y-2">
-        <h2 className="font-medium">Wake Word</h2>
-        <p className="text-sm text-gray-500">
-          Say <strong>"Hey Tiby"</strong> anywhere in the app to activate the assistant.
-          The mic indicator in the header shows when wake detection is active.
-        </p>
-        <p className="text-xs text-gray-400">
-          Wake word detection requires microphone permission and works best in Chrome / Edge / Safari 17+.
-        </p>
-      </div>
+
+      {/* Wake overlay */}
+      {overlayOpen && <WakeWordOverlay onCommand={handleCommand} onDismiss={()=>setOverlayOpen(false)}/>}
+
+      <Toaster position="top-center"/>
     </div>
   )
 }
 
 export default function App() {
+  const [user, setUser]   = useState(null)
+  const [ready, setReady] = useState(false)
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({data:{session}})=>{
+      setUser(session?.user??null); setReady(true)
+    })
+    const {data:{subscription}} = supabase.auth.onAuthStateChange((_,session)=>{
+      setUser(session?.user??null)
+    })
+    return ()=>subscription.unsubscribe()
+  }, [])
+
+  if (!ready) return (
+    <div style={{height:'100dvh',display:'flex',alignItems:'center',justifyContent:'center',background:'#f9f9f8'}}>
+      <div style={{textAlign:'center'}}>
+        <div style={{width:44,height:44,borderRadius:12,background:'#1a1a1a',display:'flex',alignItems:'center',justifyContent:'center',fontSize:19,fontWeight:600,color:'#fff',margin:'0 auto 12px'}}>T</div>
+        <div style={{fontSize:13,color:'#9ca3af'}}>Loading…</div>
+      </div>
+    </div>
+  )
+
+  if (!user) return <LoginPage/>
+
   return (
     <BrowserRouter>
-      <AppInner />
+      <AppInner user={user}/>
     </BrowserRouter>
   )
 }
