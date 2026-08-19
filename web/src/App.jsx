@@ -12,22 +12,25 @@ import WakeWordOverlay from './components/WakeWordOverlay'
 import { useWakeWord }      from './hooks/useWakeWord'
 import { useCommandRouter } from './hooks/useCommandRouter'
 import { usePWAInstall }    from './hooks/usePWAInstall'
+import AnalyticsPage   from './pages/AnalyticsPage'
 import { supabase, signOut } from './services/supabase'
 
 const NAV = [
-  { to:'/home',     icon:'ti-home',       label:'Home' },
-  { to:'/scan',     icon:'ti-id',         label:'Scan' },
-  { to:'/meetings', icon:'ti-microphone', label:'Meetings' },
-  { to:'/contacts', icon:'ti-users',      label:'Contacts' },
-  { to:'/settings', icon:'ti-settings',   label:'Settings' },
+  { to:'/home',      icon:'ti-home',       label:'Home' },
+  { to:'/scan',      icon:'ti-id',         label:'Scan' },
+  { to:'/meetings',  icon:'ti-microphone', label:'Meetings' },
+  { to:'/contacts',  icon:'ti-users',      label:'Contacts' },
+  { to:'/analytics', icon:'ti-chart-bar',  label:'Tasks' },
+  { to:'/settings',  icon:'ti-settings',   label:'Settings' },
 ]
 
 const PAGE_META = {
-  '/home':     { icon:'ti-home',       bg:'#f5f5f4', color:'#6b7280', title:'Home',        sub:'Ask Tiby anything' },
-  '/scan':     { icon:'ti-id',         bg:'#fef3c7', color:'#92400e', title:'Card scanner', sub:'Scan → extract → email' },
-  '/meetings': { icon:'ti-microphone', bg:'#fee2e2', color:'#991b1b', title:'Meetings',     sub:'Record or scan notes' },
-  '/contacts': { icon:'ti-users',      bg:'#dbeafe', color:'#1e40af', title:'Contacts',     sub:'Your saved contacts' },
-  '/settings': { icon:'ti-settings',   bg:'#f5f5f4', color:'#6b7280', title:'Settings',     sub:'Account and preferences' },
+  '/home':      { icon:'ti-home',       bg:'#f5f5f4', color:'#6b7280', title:'Home',        sub:'Ask Tiby anything' },
+  '/scan':      { icon:'ti-id',         bg:'#fef3c7', color:'#92400e', title:'Card scanner', sub:'Scan → extract → email' },
+  '/meetings':  { icon:'ti-microphone', bg:'#fee2e2', color:'#991b1b', title:'Meetings',     sub:'Record or scan notes' },
+  '/contacts':  { icon:'ti-users',      bg:'#dbeafe', color:'#1e40af', title:'Contacts',     sub:'Your saved contacts' },
+  '/analytics': { icon:'ti-chart-bar',  bg:'#ede9fe', color:'#5b21b6', title:'Dashboard',    sub:'Tasks + analytics' },
+  '/settings':  { icon:'ti-settings',   bg:'#f5f5f4', color:'#6b7280', title:'Settings',     sub:'Account and preferences' },
 }
 
 function AppInner({ user }) {
@@ -125,6 +128,7 @@ function AppInner({ user }) {
             <Route path="/scan"     element={<CardScannerPage/>}/>
             <Route path="/meetings" element={<MeetingPage/>}/>
             <Route path="/contacts" element={<ContactsPage/>}/>
+            <Route path="/analytics" element={<AnalyticsPage/>}/>
             <Route path="/settings" element={<SettingsPage user={user}/>}/>
           </Routes>
         </div>
