@@ -4,24 +4,31 @@ import { transcribeVoice } from '../services/api'
 import { useSpeech } from '../hooks/useSpeech'
 
 const ROUTES = [
-  { patterns: [/scan|card|visit|business/i], route: '/scan',     label: 'Opening card scanner…' },
-  { patterns: [/meet|record|mom|minut|audio/i], route: '/meetings', label: 'Opening meetings…' },
-  { patterns: [/note|handwrit|whiteboard/i], route: '/meetings', label: 'Opening notes scanner…' },
-  { patterns: [/contact|people|saved/i], route: '/contacts',    label: 'Opening contacts…' },
-  { patterns: [/setting|gmail|connect|account/i], route: '/settings', label: 'Opening settings…' },
+  { patterns: [/scan|card|visit|business/i], route: '/scan',      label: 'Opening card scanner…' },
+  { patterns: [/meet|record|mom|minut|audio/i], route: '/meetings',  label: 'Opening meetings…' },
+  { patterns: [/note|handwrit|whiteboard/i], route: '/meetings',  label: 'Opening notes scanner…' },
+  { patterns: [/contact|people|saved/i], route: '/contacts',     label: 'Opening contacts…' },
+  { patterns: [/analytic|task|dashboard|progress/i], route: '/analytics', label: 'Opening dashboard…' },
+  { patterns: [/setting|gmail|connect|account/i], route: '/settings',  label: 'Opening settings…' },
+]
+
+// Detect task completion phrases
+const DONE_PATTERNS = [
+  /i (have |'ve |)?(done|completed|finished|sent|called|followed up|met|spoke|talked|emailed)/i,
+  /done with/i, /completed the/i, /finished the/i, /sent the/i,
 ]
 
 const QUICK = [
-  { icon: 'ti-id',         label: 'Scan a card',       route: '/scan',     bg: '#fef3c7', color: '#92400e' },
-  { icon: 'ti-microphone', label: 'Record meeting',     route: '/meetings', bg: '#fee2e2', color: '#991b1b' },
-  { icon: 'ti-pencil',     label: 'Scan notes',         route: '/meetings', bg: '#fef3c7', color: '#92400e' },
-  { icon: 'ti-users',      label: 'My contacts',        route: '/contacts', bg: '#dbeafe', color: '#1e40af' },
+  { icon: 'ti-id',         label: 'Scan a card',       route: '/scan',      bg: '#fef3c7', color: '#92400e' },
+  { icon: 'ti-microphone', label: 'Record meeting',     route: '/meetings',  bg: '#fee2e2', color: '#991b1b' },
+  { icon: 'ti-pencil',     label: 'Scan notes',         route: '/meetings',  bg: '#fef3c7', color: '#92400e' },
+  { icon: 'ti-chart-bar',  label: 'My dashboard',       route: '/analytics', bg: '#ede9fe', color: '#5b21b6' },
 ]
 
 const ACTIONS = [
-  { icon: 'ti-id',         label: 'Scan visiting card',      sub: 'Extract contact + draft email',     route: '/scan',     bg: '#fef3c7', color: '#92400e' },
-  { icon: 'ti-microphone', label: 'Record meeting',           sub: 'Transcribe + generate MOM',          route: '/meetings', bg: '#fee2e2', color: '#991b1b' },
-  { icon: 'ti-pencil',     label: 'Scan handwritten notes',   sub: 'Photo → structured minutes',         route: '/meetings', bg: '#fef3c7', color: '#92400e' },
+  { icon: 'ti-id',         label: 'Scan visiting card',      sub: 'Extract contact + draft email',     route: '/scan',      bg: '#fef3c7', color: '#92400e' },
+  { icon: 'ti-microphone', label: 'Record meeting',           sub: 'Transcribe + generate MOM',          route: '/meetings',  bg: '#fee2e2', color: '#991b1b' },
+  { icon: 'ti-chart-bar',  label: 'Dashboard & tasks',        sub: 'Track action items + priorities',    route: '/analytics', bg: '#ede9fe', color: '#5b21b6' },
 ]
 
 function greeting() {
@@ -59,14 +66,39 @@ export default function HomePage({ user }) {
     await new Promise(r => setTimeout(r, 350))
 
     const clean = text.toLowerCase().replace(/hey tiby[,.]?\s*/gi, '').trim()
-    const match = ROUTES.find(r => r.patterns.some(p => p.test(clean)))
 
+    // Check if user is marking a task done
+    const isDoneIntent = DONE_PATTERNS.some(p => p.test(clean))
+    if (isDoneIntent) {
+      try {
+        const APPS_SCRIPT_URL = import.meta.env.VITE_APPS_SCRIPT_URL || ''
+        const res  = await fetch(APPS_SCRIPT_URL, {
+          method: 'POST',
+          body: JSON.stringify({ action: 'complete-task', text: clean }),
+        })
+        const data = await res.json()
+        if (data.status === 'success') {
+          const reply = `✅ Got it — marked "${data.task}" as done!`
+          addMsg('tiby', reply)
+          speak(reply)
+          setThinking(false)
+          return
+        } else if (data.status === 'no_match') {
+          const reply = "I couldn't find a matching task. You can mark it done manually in the Analytics page."
+          addMsg('tiby', reply)
+          setThinking(false)
+          return
+        }
+      } catch {}
+    }
+
+    const match = ROUTES.find(r => r.patterns.some(p => p.test(clean)))
     if (match) {
       addMsg('tiby', match.label)
       speak(match.label)
       setTimeout(() => navigate(match.route), 800)
     } else {
-      const reply = "I can scan cards, record meetings, scan notes, or manage contacts. What would you like to do?"
+      const reply = "I can scan cards, record meetings, scan notes, manage contacts, or show your dashboard. What would you like to do?"
       addMsg('tiby', reply)
       speak(reply)
     }
