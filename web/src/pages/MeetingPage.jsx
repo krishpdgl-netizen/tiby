@@ -1,4 +1,5 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
+import { getUserContext } from '../services/userProfile'
 
 const APPS_SCRIPT_URL = import.meta.env.VITE_APPS_SCRIPT_URL || ''
 const API_URL = import.meta.env.VITE_API_URL || 'https://tiby.onrender.com/api/v1'
@@ -6,6 +7,8 @@ const SHEET_URL = 'https://docs.google.com/spreadsheets/d/1i2g6CyilXM--qk35qHwyd
 
 export default function MeetingPage() {
   const [title, setTitle]           = useState('')
+  const [userCtx, setUserCtx]       = useState({})
+  useEffect(() => { getUserContext().then(setUserCtx) }, [])
   const [mode, setMode]             = useState(null)
   const [result, setResult]         = useState(null)
   const [loading, setLoading]       = useState(false)
@@ -58,7 +61,7 @@ export default function MeetingPage() {
     setLoading(true);setDot('active');setStatus('Reading handwritten notes…')
     try {
       const enc=await b64(noteBlob)
-      const res=await fetch(APPS_SCRIPT_URL,{method:'POST',body:JSON.stringify({action:'scan-notes',image_base64:enc,image_mime:'image/jpeg',meeting_title:title||'Meeting'})})
+      const res=await fetch(APPS_SCRIPT_URL,{method:'POST',body:JSON.stringify({action:'scan-notes',image_base64:enc,image_mime:'image/jpeg',meeting_title:title||'Meeting',sheet_id:userCtx.sheet_id})})
       const data=await res.json()
       if(data.status==='success'){setResult(data);setDot('done');setStatus('Minutes ready')}
       else throw new Error(data.message||'Extraction failed')
@@ -91,7 +94,7 @@ export default function MeetingPage() {
       const transcript=sttData.transcript||''
       if(!transcript)throw new Error('No speech detected')
       setStatus('Generating minutes…')
-      const momRes=await fetch(APPS_SCRIPT_URL,{method:'POST',body:JSON.stringify({action:'generate-mom',transcript,meeting_title:title||'Meeting'})})
+      const momRes=await fetch(APPS_SCRIPT_URL,{method:'POST',body:JSON.stringify({action:'generate-mom',transcript,meeting_title:title||'Meeting',sheet_id:userCtx.sheet_id})})
       const momData=await momRes.json()
       if(momData.status!=='success')throw new Error(momData.message||'MOM generation failed')
       setResult({...momData,transcript});setDot('done');setStatus('Minutes ready')
