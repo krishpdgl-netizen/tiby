@@ -1,47 +1,63 @@
 import { useState, useEffect } from 'react'
+import { getUserContext } from '../services/userProfile'
 
-const SHEET_URL = 'https://docs.google.com/spreadsheets/d/1i2g6CyilXM--qk35qHwydYkyokvd0L0oEjO7b8BNW6I'
 const APPS_SCRIPT_URL = import.meta.env.VITE_APPS_SCRIPT_URL || ''
-
 const COLORS = ['ti-amber','ti-blue','ti-green','ti-purple','ti-red']
 
 export default function ContactsPage() {
-  const [contacts, setContacts] = useState([])
-  const [filtered, setFiltered] = useState([])
-  const [search, setSearch]     = useState('')
-  const [loading, setLoading]   = useState(true)
-  const [selected, setSelected] = useState(null)
+  const [contacts, setContacts]   = useState([])
+  const [filtered, setFiltered]   = useState([])
+  const [search, setSearch]       = useState('')
+  const [loading, setLoading]     = useState(true)
+  const [selectedId, setSelectedId] = useState(null) // store ID not index
+  const [userCtx, setUserCtx]     = useState({})
+  const [sheetUrl, setSheetUrl]   = useState(null)
 
-  useEffect(() => { fetchContacts() }, [])
+  useEffect(() => {
+    getUserContext().then(ctx => {
+      setUserCtx(ctx)
+      if (ctx.sheet_id) setSheetUrl(`https://docs.google.com/spreadsheets/d/${ctx.sheet_id}`)
+      fetchContacts(ctx)
+    })
+  }, [])
+
   useEffect(() => {
     const q = search.toLowerCase()
-    setFiltered(q ? contacts.filter(c => `${c.name}${c.email}${c.company}`.toLowerCase().includes(q)) : contacts)
+    setFiltered(q
+      ? contacts.filter(c => `${c.name}${c.email}${c.company}`.toLowerCase().includes(q))
+      : contacts
+    )
+    setSelectedId(null) // reset selection on search
   }, [search, contacts])
 
-  async function fetchContacts() {
+  async function fetchContacts(ctx) {
     setLoading(true)
     try {
-      // Fetch contacts from Apps Script
-      const res  = await fetch(APPS_SCRIPT_URL + '?action=get-contacts')
+      if (!ctx?.sheet_id) { setContacts([]); setLoading(false); return }
+      const res  = await fetch(`${APPS_SCRIPT_URL}?action=get-contacts&sheet_id=${ctx.sheet_id}`)
       const data = await res.json()
       if (data.contacts) setContacts(data.contacts)
-    } catch {
-      // Fallback — show empty with sheet link
-      setContacts([])
-    } finally { setLoading(false) }
+      else setContacts([])
+    } catch { setContacts([]) }
+    finally { setLoading(false) }
   }
 
   function initials(name) {
     if (!name) return '?'
     return name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase()
   }
-
   function colorFor(i) { return COLORS[i % COLORS.length] }
 
-  const mailtoLink = (c) => {
-    if (!c.email) return null
-    return `mailto:${c.email}?subject=Following up&body=Hi ${c.name||''},`
-  }
+  const selectedContact = selectedId ? contacts.find(c => (c.email||c.name) === selectedId) : null
+
+  // Group by organisation for the "task circle" feature
+  const orgs = {}
+  contacts.forEach(c => {
+    if (c.company) {
+      if (!orgs[c.company]) orgs[c.company] = []
+      orgs[c.company].push(c)
+    }
+  })
 
   return (
     <div className="t-content" style={{ paddingTop: 16 }}>
@@ -49,89 +65,113 @@ export default function ContactsPage() {
       {/* Search */}
       <div className="t-search-wrap">
         <i className="ti ti-search" aria-hidden="true"/>
-        <input className="t-input" placeholder="Search contacts…" value={search} onChange={e=>setSearch(e.target.value)} />
+        <input className="t-input" placeholder="Search contacts…"
+          value={search} onChange={e => setSearch(e.target.value)} />
       </div>
 
       {loading ? (
-        <div style={{ textAlign:'center',padding:'40px 0',color:'#9ca3af',fontSize:13 }}>
-          Loading contacts…
+        <div style={{ textAlign:'center',padding:'40px 0',color:'#9ca3af',fontSize:13 }}>Loading contacts…</div>
+      ) : !userCtx.sheet_id ? (
+        <div className="t-card" style={{ textAlign:'center',padding:'24px 16px' }}>
+          <i className="ti ti-users" style={{ fontSize:36,color:'#d1d5db',display:'block',marginBottom:10 }} aria-hidden="true"/>
+          <div className="t-ct" style={{ marginBottom:6 }}>No personal sheet yet</div>
+          <div className="t-cs" style={{ marginBottom:16 }}>Go to Settings to create your personal sheet first</div>
         </div>
       ) : filtered.length === 0 ? (
-        <div className="t-card" style={{ textAlign:'center',padding:'28px 16px' }}>
+        <div className="t-card" style={{ textAlign:'center',padding:'24px 16px' }}>
           <i className="ti ti-users" style={{ fontSize:36,color:'#d1d5db',display:'block',marginBottom:10 }} aria-hidden="true"/>
-          <div style={{ fontSize:14,fontWeight:600,color:'#1a1a1a',marginBottom:6 }}>
-            {search ? 'No contacts found' : 'No contacts yet'}
-          </div>
-          <div style={{ fontSize:13,color:'#6b7280',marginBottom:16 }}>
-            {search ? 'Try a different search term' : 'Scan a visiting card to add your first contact'}
-          </div>
-          <a href={SHEET_URL} target="_blank" rel="noreferrer" className="t-btn t-btn-ghost" style={{ textDecoration:'none',display:'flex',width:'auto',padding:'9px 16px',fontSize:13 }}>
-            <i className="ti ti-external-link" aria-hidden="true"/> Open in Sheets
-          </a>
+          <div className="t-ct" style={{ marginBottom:6 }}>{search ? 'No contacts found' : 'No contacts yet'}</div>
+          <div className="t-cs" style={{ marginBottom:16 }}>{search ? 'Try a different search' : 'Scan a visiting card to add your first contact'}</div>
         </div>
       ) : (
         <>
           <div style={{ fontSize:12,color:'#9ca3af',paddingLeft:2 }}>{filtered.length} contact{filtered.length!==1?'s':''}</div>
-          <div className="t-card" style={{ padding:'4px 14px' }}>
-            {filtered.map((c,i) => (
-              <div key={i} className="t-row" onClick={()=>setSelected(selected===i?null:i)} style={{ cursor:'pointer' }}>
-                <div className={`t-row-av ${colorFor(i)}`}>{initials(c.name)}</div>
-                <div style={{ flex:1,minWidth:0 }}>
-                  <div className="t-row-name" style={{ overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' }}>{c.name||'Unknown'}</div>
-                  <div className="t-row-sub" style={{ overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' }}>
-                    {[c.company,c.role].filter(Boolean).join(' · ')||c.email||'No details'}
+
+          {/* Organisation groups */}
+          {!search && Object.entries(orgs).filter(([,c])=>c.length>1).length>0 && (
+            <div className="t-card" style={{ padding:'12px 16px' }}>
+              <div style={{ fontSize:11,fontWeight:700,color:'#6b7280',textTransform:'uppercase',letterSpacing:'.4px',marginBottom:10 }}>Organisations</div>
+              {Object.entries(orgs).filter(([,c])=>c.length>1).map(([org, members]) => (
+                <div key={org} style={{ display:'flex',alignItems:'center',gap:8,marginBottom:8 }}>
+                  <div style={{ flex:1,fontSize:13,fontWeight:600,color:'#1a1a1a' }}>{org}</div>
+                  <div style={{ display:'flex',gap:-4 }}>
+                    {members.slice(0,4).map((m,i) => (
+                      <div key={i} style={{ width:24,height:24,borderRadius:'50%',background:'#e8f0fe',display:'flex',alignItems:'center',justifyContent:'center',fontSize:9,fontWeight:700,color:'#1a73e8',marginLeft:i?-6:0,border:'1.5px solid #fff' }}>
+                        {initials(m.name)}
+                      </div>
+                    ))}
+                    {members.length>4 && <div style={{ width:24,height:24,borderRadius:'50%',background:'#f5f5f4',display:'flex',alignItems:'center',justifyContent:'center',fontSize:9,color:'#6b7280',marginLeft:-6,border:'1.5px solid #fff' }}>+{members.length-4}</div>}
                   </div>
                 </div>
-                {c.email && (
-                  <a href={mailtoLink(c)} onClick={e=>e.stopPropagation()}
-                    style={{ color:'#6b7280',textDecoration:'none',flexShrink:0 }}>
-                    <i className="ti ti-mail" style={{ fontSize:18 }} aria-hidden="true"/>
-                  </a>
-                )}
-              </div>
-            ))}
+              ))}
+            </div>
+          )}
+
+          {/* Contact list */}
+          <div className="t-card" style={{ padding:'4px 14px' }}>
+            {filtered.map((c,i) => {
+              const cId = c.email||c.name
+              return (
+                <div key={i} className="t-row" onClick={()=>setSelectedId(selectedId===cId?null:cId)} style={{ cursor:'pointer' }}>
+                  <div className={`t-row-av ${colorFor(i)}`}>{initials(c.name)}</div>
+                  <div style={{ flex:1,minWidth:0 }}>
+                    <div className="t-row-name" style={{ overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' }}>{c.name||'Unknown'}</div>
+                    <div className="t-row-sub" style={{ overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' }}>
+                      {[c.company,c.role].filter(Boolean).join(' · ')||c.email||'No details'}
+                    </div>
+                  </div>
+                  {c.email && (
+                    <a href={`mailto:${c.email}?subject=Following up&body=Hi ${c.name||''},`}
+                      onClick={e=>e.stopPropagation()} style={{ color:'#6b7280',textDecoration:'none',flexShrink:0 }}>
+                      <i className="ti ti-mail" style={{ fontSize:18 }} aria-hidden="true"/>
+                    </a>
+                  )}
+                </div>
+              )
+            })}
           </div>
 
           {/* Selected contact detail */}
-          {selected !== null && filtered[selected] && (
+          {selectedContact && (
             <div className="t-card accent">
               <div className="t-card-head">
-                <div className={`t-row-av ${colorFor(selected)}`} style={{ width:40,height:40,borderRadius:10,fontSize:14 }}>
-                  {initials(filtered[selected].name)}
+                <div className="t-row-av ti-blue" style={{ width:40,height:40,borderRadius:10,fontSize:14 }}>
+                  {initials(selectedContact.name)}
                 </div>
                 <div>
-                  <div className="t-ct">{filtered[selected].name||'Unknown'}</div>
-                  <div className="t-cs">{filtered[selected].role||filtered[selected].company||''}</div>
+                  <div className="t-ct">{selectedContact.name||'Unknown'}</div>
+                  <div className="t-cs">{selectedContact.role||selectedContact.company||''}</div>
                 </div>
               </div>
-              {[
-                ['Company', filtered[selected].company],
-                ['Email',   filtered[selected].email],
-                ['Phone',   filtered[selected].phone],
-                ['Website', filtered[selected].website],
-              ].filter(([,v])=>v).map(([l,v])=>(
+              {[['Company',selectedContact.company],['Email',selectedContact.email],['Phone',selectedContact.phone],['Website',selectedContact.website]]
+                .filter(([,v])=>v).map(([l,v])=>(
                 <div key={l} style={{ display:'flex',gap:10,padding:'6px 0',borderBottom:'1px solid #f0f0ef',fontSize:13 }}>
                   <span style={{ color:'#9ca3af',minWidth:60 }}>{l}</span>
                   <span style={{ color:'#1a1a1a' }}>{v}</span>
                 </div>
               ))}
-              {filtered[selected].email && (
-                <a href={mailtoLink(filtered[selected])} className="t-btn t-btn-primary" style={{ marginTop:12,textDecoration:'none',display:'flex' }}>
+              {selectedContact.email && (
+                <a href={`mailto:${selectedContact.email}?subject=Following up&body=Hi ${selectedContact.name||''},`}
+                  className="t-btn t-btn-primary" style={{ marginTop:12,textDecoration:'none',display:'flex' }}>
                   <i className="ti ti-mail" aria-hidden="true"/> Draft email
                 </a>
               )}
-              {filtered[selected].drive_url && (
-                <a href={filtered[selected].drive_url} target="_blank" rel="noreferrer" className="t-btn t-btn-ghost" style={{ textDecoration:'none',display:'flex' }}>
+              {selectedContact.drive_url && (
+                <a href={selectedContact.drive_url} target="_blank" rel="noreferrer"
+                  className="t-btn t-btn-ghost" style={{ textDecoration:'none',display:'flex' }}>
                   <i className="ti ti-photo" aria-hidden="true"/> View card
                 </a>
               )}
             </div>
           )}
-
-          <a href={SHEET_URL} target="_blank" rel="noreferrer" className="t-btn t-btn-ghost" style={{ textDecoration:'none',display:'flex',marginTop:4 }}>
-            <i className="ti ti-external-link" aria-hidden="true"/> View all in Sheets
-          </a>
         </>
+      )}
+
+      {sheetUrl && (
+        <a href={sheetUrl} target="_blank" rel="noreferrer"
+          className="t-btn t-btn-ghost" style={{ textDecoration:'none',display:'flex',marginTop:4 }}>
+          <i className="ti ti-external-link" aria-hidden="true"/> View all in Sheets
+        </a>
       )}
     </div>
   )
