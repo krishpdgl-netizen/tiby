@@ -9,7 +9,7 @@ from app.core.config import settings
 
 genai.configure(api_key=settings.GEMINI_API_KEY)
 
-MODEL = "gemini-2.0-flash-lite"   # update to gemini-2.5-flash-lite when available in your region
+MODEL = "gemini-3.1-flash-lite"   # update to gemini-2.5-flash-lite when available in your region
 VISION_MODEL = "gemini-2.0-flash-lite"
 
 
