@@ -1,41 +1,62 @@
+import logging
+import time
+import uuid
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from app.core.config import settings
-from app.api.v1.endpoints import contacts, emails, meetings, voice, quick_email
+from app.core.logging import configure_logging
+from app.api.v1.endpoints import agent, analytics, contacts, emails, meetings, tasks, voice
+
+configure_logging()
+log = logging.getLogger('tiby')
 
 app = FastAPI(
-    title="Tiby API",
-    description="AI Personal Assistant — Phase 1",
-    version="1.0.0",
+    title='Tiby API',
+    description='AI Personal Assistant',
+    version='2.0.0',
+    # Hide docs in production
+    docs_url='/docs' if settings.APP_ENV != 'production' else None,
+    redoc_url=None,
 )
 
-# ── CORS — handle OPTIONS at middleware level before routing ──────────────────
-@app.middleware("http")
-async def cors_handler(request: Request, call_next):
-    if request.method == "OPTIONS":
-        return JSONResponse(
-            content={},
-            headers={
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
-                "Access-Control-Allow-Headers": "*",
-                "Access-Control-Max-Age": "86400",
-            }
-        )
-    response = await call_next(request)
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Headers"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.allowed_origins_list,
+    allow_credentials=True,
+    allow_methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allow_headers=['Authorization', 'Content-Type', 'X-Request-ID'],
+)
+
+
+@app.middleware('http')
+async def request_context(request: Request, call_next):
+    rid = request.headers.get('X-Request-ID') or str(uuid.uuid4())
+    start = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        log.exception('request_failed request_id=%s path=%s', rid, request.url.path)
+        raise
+    response.headers['X-Request-ID'] = rid
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    response.headers['Permissions-Policy'] = 'camera=(self), microphone=(self), geolocation=()'
+    response.headers['Cache-Control'] = 'no-store' if request.url.path.startswith('/api/') else 'no-cache'
+    ms = int((time.perf_counter() - start) * 1000)
+    log.info('request request_id=%s method=%s path=%s status=%s ms=%d', rid, request.method, request.url.path, response.status_code, ms)
     return response
 
-app.include_router(contacts.router,    prefix="/api/v1")
-app.include_router(emails.router,      prefix="/api/v1")
-app.include_router(quick_email.router, prefix="/api/v1")
-app.include_router(meetings.router,    prefix="/api/v1")
-app.include_router(voice.router,       prefix="/api/v1")
+
+for router in (agent.router, analytics.router, contacts.router, emails.router, meetings.router, tasks.router, voice.router):
+    app.include_router(router, prefix=settings.API_V1_PREFIX if hasattr(settings, 'API_V1_PREFIX') else '/api/v1')
 
 
-@app.get("/")
+@app.get('/healthz')
 async def health():
-    return {"status": "ok", "app": "Tiby API", "version": "1.0.0"}
+    return {'status': 'ok', 'app': 'Tiby API', 'version': '2.0.0'}
+
+
+@app.get('/')
+async def root():
+    return {'status': 'ok', 'app': 'Tiby API', 'version': '2.0.0'}
