@@ -1,184 +1,108 @@
-"""
-Email API
-POST /emails/draft      — voice instruction → AI draft → text for TTS
-POST /emails/send       — (Gmail not set up yet) returns email content for manual send
-GET  /emails/auth/url   — placeholder until Google Cloud is configured
-GET  /emails/auth/callback
-"""
+import secrets
 import uuid
+import urllib.parse
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
-from sqlalchemy.ext.asyncio import AsyncSession
+from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
-from pydantic import BaseModel
-
+from sqlalchemy.ext.asyncio import AsyncSession
+import redis.asyncio as redis
+from app.core.auth import CurrentUser
+from app.core.config import settings
 from app.core.database import get_db
+from app.core.rate_limit import enforce_rate_limit
 from app.models.models import Contact, EmailLog, User
 from app.services.ai_service import draft_email
-from app.services.tts_service import email_to_speech
+from app.services.gmail_service import get_gmail_auth_url, exchange_code_for_tokens, store_tokens, send_email as gmail_send
 
-router = APIRouter(prefix="/emails", tags=["emails"])
-
-
-def get_current_user_id() -> uuid.UUID:
-    return uuid.UUID("00000000-0000-0000-0000-000000000001")
-
+router = APIRouter(prefix='/emails', tags=['emails'])
 
 class DraftRequest(BaseModel):
     contact_id: uuid.UUID
-    voice_instruction: str
-
-
+    voice_instruction: str = Field(min_length=1, max_length=5000)
+class QuickDraftRequest(BaseModel):
+    contact: dict
+    voice_instruction: str = Field(min_length=1, max_length=5000)
 class SendRequest(BaseModel):
     contact_id: uuid.UUID
-    subject: str
-    body: str
+    subject: str = Field(min_length=1, max_length=500)
+    body: str = Field(min_length=1, max_length=50000)
     voice_instruction: str | None = None
+class QuickSendRequest(BaseModel):
+    to_email: EmailStr
+    subject: str = Field(min_length=1, max_length=500)
+    body: str = Field(min_length=1, max_length=50000)
 
+async def _db_user(db: AsyncSession, user_id):
+    q = await db.execute(select(User).where(User.id == user_id)); return q.scalar_one()
 
-@router.post("/draft")
-async def draft_email_for_contact(
-    req: DraftRequest,
-    db: AsyncSession = Depends(get_db),
-    user_id: uuid.UUID = Depends(get_current_user_id),
-):
-    """
-    1. Load contact
-    2. Draft email with Gemini
-    3. Return draft + text for browser TTS
-    """
-    result = await db.execute(
-        select(Contact).where(Contact.id == req.contact_id, Contact.user_id == user_id)
-    )
-    contact = result.scalar_one_or_none()
-    if not contact:
-        raise HTTPException(404, "Contact not found")
+@router.post('/draft')
+async def draft_for_contact(req: DraftRequest, user: CurrentUser, db: AsyncSession = Depends(get_db)):
+    await enforce_rate_limit(str(user.id), 'ai-email', settings.AI_RATE_LIMIT_PER_MINUTE)
+    q = await db.execute(select(Contact).where(Contact.id == req.contact_id, Contact.user_id == user.id))
+    c = q.scalar_one_or_none()
+    if not c: raise HTTPException(404, 'Contact not found')
+    d = await draft_email({'name':c.name,'email':c.email,'company':c.company,'role':c.role}, req.voice_instruction, user.name)
+    u = await _db_user(db, user.id)
+    return {**d, 'speak_text':f"Subject: {d['subject']}. {d['body']}", 'contact':{'name':c.name,'email':c.email}, 'gmail_connected':u.gmail_connected}
 
-    user_result = await db.execute(select(User).where(User.id == user_id))
-    user = user_result.scalar_one_or_none()
+@router.post('/draft-quick')
+async def draft_quick(req: QuickDraftRequest, user: CurrentUser):
+    await enforce_rate_limit(str(user.id), 'ai-email', settings.AI_RATE_LIMIT_PER_MINUTE)
+    d = await draft_email(req.contact, req.voice_instruction, user.name)
+    return {**d, 'speak_text':f"Subject: {d['subject']}. {d['body']}"}
 
-    contact_dict = {
-        "name": contact.name,
-        "email": contact.email,
-        "company": contact.company,
-        "role": contact.role,
-    }
-    draft = await draft_email(
-        contact=contact_dict,
-        user_instruction=req.voice_instruction,
-        user_name=user.name if user else None,
-    )
-
-    # Get text for browser to speak aloud
-    tts = await email_to_speech(draft["subject"], draft["body"])
-
-    return {
-        "subject": draft["subject"],
-        "body": draft["body"],
-        "speak_text": tts["speak_text"],    # frontend calls speechSynthesis with this
-        "contact": {"name": contact.name, "email": contact.email},
-        "gmail_connected": user.gmail_connected if user else False,
-    }
-
-
-@router.post("/send")
-async def send_approved_email(
-    req: SendRequest,
-    db: AsyncSession = Depends(get_db),
-    user_id: uuid.UUID = Depends(get_current_user_id),
-):
-    """
-    If Gmail is connected → send via Gmail API.
-    If not → return the draft for the user to send manually.
-    """
-    result = await db.execute(
-        select(Contact).where(Contact.id == req.contact_id, Contact.user_id == user_id)
-    )
-    contact = result.scalar_one_or_none()
-    if not contact or not contact.email:
-        raise HTTPException(404, "Contact or contact email not found")
-
-    user_result = await db.execute(select(User).where(User.id == user_id))
-    user = user_result.scalar_one_or_none()
-
-    # Log the draft regardless
-    from datetime import datetime
-    log = EmailLog(
-        user_id=user_id,
-        contact_id=contact.id,
-        to_email=contact.email,
-        subject=req.subject,
-        body=req.body,
-        voice_instruction=req.voice_instruction,
-    )
-
-    if user and user.gmail_connected:
-        # Gmail path (active once Google Cloud is set up)
-        try:
-            from app.services.gmail_service import send_email as gmail_send
-            gmail_id = await gmail_send(user, contact.email, req.subject, req.body)
-            log.gmail_message_id = gmail_id
-            log.sent_at = datetime.utcnow()
-            db.add(log)
-            await db.commit()
-            return {"success": True, "method": "gmail", "gmail_message_id": gmail_id}
-        except Exception as e:
-            # Fall through to manual if Gmail fails
-            pass
-
-    # Manual send fallback — return mailto link + draft
+async def _send_or_mailto(db, u: User, to_email: str, subject: str, body: str, contact_id=None, voice_instruction=None):
+    log = EmailLog(user_id=u.id, contact_id=contact_id, to_email=to_email, subject=subject, body=body, voice_instruction=voice_instruction)
     db.add(log)
+    if u.gmail_connected:
+        try:
+            gid = await gmail_send(u, to_email, subject, body)
+            log.gmail_message_id = gid; log.sent_at = datetime.now(timezone.utc)
+            await db.commit()
+            return {'success':True,'method':'gmail','gmail_message_id':gid}
+        except Exception as exc:
+            log.error = str(exc)[:2000]
+            u.gmail_connected = False
     await db.commit()
+    mailto = f"mailto:{to_email}?subject={urllib.parse.quote(subject)}&body={urllib.parse.quote(body)}"
+    return {'success':False,'method':'manual','mailto':mailto,'to':to_email,'subject':subject,'body':body}
 
-    import urllib.parse
-    mailto = (
-        f"mailto:{contact.email}"
-        f"?subject={urllib.parse.quote(req.subject)}"
-        f"&body={urllib.parse.quote(req.body)}"
-    )
-    return {
-        "success": False,
-        "method": "manual",
-        "mailto": mailto,
-        "to": contact.email,
-        "subject": req.subject,
-        "body": req.body,
-        "message": "Gmail not connected yet. Use the mailto link or copy the draft.",
-    }
+@router.post('/send')
+async def send(req: SendRequest, user: CurrentUser, db: AsyncSession = Depends(get_db)):
+    q = await db.execute(select(Contact).where(Contact.id == req.contact_id, Contact.user_id == user.id))
+    c = q.scalar_one_or_none()
+    if not c or not c.email: raise HTTPException(404, 'Contact or contact email not found')
+    return await _send_or_mailto(db, await _db_user(db,user.id), c.email, req.subject, req.body, c.id, req.voice_instruction)
 
+@router.post('/send-quick')
+async def send_quick(req: QuickSendRequest, user: CurrentUser, db: AsyncSession = Depends(get_db)):
+    return await _send_or_mailto(db, await _db_user(db,user.id), str(req.to_email), req.subject, req.body)
 
-@router.get("/auth/url")
-async def gmail_auth_url(user_id: uuid.UUID = Depends(get_current_user_id)):
-    """Returns Gmail OAuth URL. Only works once Google Cloud Console is set up."""
-    from app.core.config import settings
-    if not settings.GOOGLE_CLIENT_ID:
-        return {
-            "auth_url": None,
-            "message": "Google Cloud Console not configured yet. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in .env.",
-        }
-    from app.services.gmail_service import get_gmail_auth_url
-    url = get_gmail_auth_url(state=str(user_id))
-    return {"auth_url": url}
+@router.get('/auth/url')
+async def gmail_auth_url(user: CurrentUser):
+    if not settings.GOOGLE_CLIENT_ID: return {'auth_url':None,'message':'Google OAuth is not configured'}
+    state = secrets.token_urlsafe(32)
+    client = redis.from_url(settings.REDIS_URL, encoding='utf-8', decode_responses=True)
+    await client.setex(f'oauth:gmail:{state}', 600, str(user.id))
+    return {'auth_url':get_gmail_auth_url(state)}
 
-
-@router.get("/auth/callback")
+@router.get('/auth/callback')
 async def gmail_callback(code: str, state: str, db: AsyncSession = Depends(get_db)):
-    """OAuth callback — saves tokens after Google Cloud is configured."""
-    from app.services.gmail_service import exchange_code_for_tokens
-    from datetime import datetime, timedelta
-
+    client = redis.from_url(settings.REDIS_URL, encoding='utf-8', decode_responses=True)
+    key = f'oauth:gmail:{state}'
+    user_id = await client.get(key)
+    if not user_id: raise HTTPException(400, 'Invalid or expired OAuth state')
+    await client.delete(key)
     tokens = await exchange_code_for_tokens(code)
-    user_id = uuid.UUID(state)
+    q = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
+    u = q.scalar_one_or_none()
+    if not u: raise HTTPException(404, 'User not found')
+    store_tokens(u, tokens); await db.commit()
+    return RedirectResponse(url=f"{settings.FRONTEND_URL.rstrip('/')}/settings?gmail=connected", status_code=302)
 
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(404, "User not found")
-
-    user.gmail_access_token = tokens["access_token"]
-    user.gmail_refresh_token = tokens.get("refresh_token", user.gmail_refresh_token)
-    user.gmail_token_expiry = datetime.utcnow() + timedelta(seconds=tokens.get("expires_in", 3600))
-    user.gmail_connected = True
-    await db.commit()
-
-    return RedirectResponse(url="http://localhost:5173/settings?gmail=connected")
+@router.get('/auth/status')
+async def gmail_status(user: CurrentUser, db: AsyncSession = Depends(get_db)):
+    u = await _db_user(db, user.id)
+    return {'connected': bool(u.gmail_connected)}
