@@ -1,39 +1,42 @@
 import { useState, useRef, useEffect } from 'react'
-import { scanCard, confirmContact, draftEmail, sendEmail, draftQuickEmail, sendQuickEmail, transcribeVoice } from '../services/api'
-import { useSpeech } from '../hooks/useSpeech'
+import { startMeeting, uploadMeetingAudio, getMeeting, processMeetingNotes, listTasks } from '../services/api'
 
-const STEP = { SCAN: 0, VOICE: 1, DRAFT: 2, SENT: 3 }
+function getSupportedMimeType() {
+  const types = ['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/mp4']
+  return types.find(t => MediaRecorder.isTypeSupported(t)) || ''
+}
 
-export default function CardScannerPage() {
-  const [step, setStep]               = useState(STEP.SCAN)
-  const [armed, setArmed]             = useState(false)
-  const [dot, setDot]                 = useState('idle')
-  const [status, setStatus]           = useState('Ready to scan')
-  const [preview, setPreview]         = useState(null)
-  const [extracted, setExtracted]     = useState({})
-  const [imagePath, setImagePath]     = useState(null)   // Supabase Storage path
-  const [imageUrl, setImageUrl]       = useState(null)   // signed preview URL
-  const [contactId, setContactId]     = useState(null)   // DB contact ID after confirm
-  const [contactData, setContactData] = useState(null)
-  const [loading, setLoading]         = useState(false)
-  const [recording, setRecording]     = useState(false)
-  const [instruction, setInstruction] = useState('')
-  const [draft, setDraft]             = useState(null)
-  const [sending, setSending]         = useState(false)
-  const [sendResult, setSendResult]   = useState(null)
+const API_URL = import.meta.env.VITE_API_URL || 'https://tiby.onrender.com/api/v1'
 
-  const videoRef  = useRef(); const streamRef = useRef()
-  const mrRef     = useRef(); const chunksRef = useRef([])
-  const { speak, stop, isSpeaking } = useSpeech()
+export default function MeetingPage() {
+  const [title, setTitle]           = useState('')
+  const [mode, setMode]             = useState(null)
+  const [result, setResult]         = useState(null)
+  const [loading, setLoading]       = useState(false)
+  const [status, setStatus]         = useState('')
+  const [dot, setDot]               = useState('idle')
+  const [noteBlob, setNoteBlob]     = useState(null)
+  const [notePreview, setNotePreview] = useState(null)
+  const [cameraOpen, setCameraOpen] = useState(false)
+  const [recording, setRecording]   = useState(false)
+  const [elapsed, setElapsed]       = useState(0)
+  const [meetingId, setMeetingId]   = useState(null)
+  const [pollTimer, setPollTimer]   = useState(null)
+
+  const videoRef  = useRef(); const streamRef  = useRef()
+  const mrRef     = useRef(); const chunksRef  = useRef([])
+  const timerRef  = useRef()
 
   useEffect(() => {
     return () => {
       streamRef.current?.getTracks().forEach(t => t.stop())
       try { mrRef.current?.stop() } catch {}
+      clearInterval(timerRef.current)
+      if (pollTimer) clearTimeout(pollTimer)
     }
-  }, [])
+  }, [pollTimer])
 
-  function resize(canvas, max=640) {
+  function resize(canvas, max=1280) {
     return new Promise(resolve=>{
       const s=Math.min(max/canvas.width,max/canvas.height,1)
       const out=document.createElement('canvas')
@@ -43,243 +46,226 @@ export default function CardScannerPage() {
     })
   }
 
-  async function handleScan() {
-    if (!armed) {
-      try {
-        const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}})
-        streamRef.current=stream;videoRef.current.srcObject=stream
-        videoRef.current.style.display='block';setArmed(true)
-      } catch { toast('Camera access denied','error') }
-      return
-    }
+  function fmt(s){return`${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`}
+
+  async function openCamera() {
+    try {
+      const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}})
+      streamRef.current=stream;videoRef.current.srcObject=stream
+      videoRef.current.style.display='block';setCameraOpen(true)
+    } catch { toast('Camera access denied','error') }
+  }
+
+  async function snapPhoto() {
     const cv=document.createElement('canvas')
     cv.width=videoRef.current.videoWidth;cv.height=videoRef.current.videoHeight
     cv.getContext('2d').drawImage(videoRef.current,0,0)
     streamRef.current?.getTracks().forEach(t=>t.stop());streamRef.current=null
-    videoRef.current.style.display='none';setArmed(false)
+    videoRef.current.style.display='none';setCameraOpen(false)
     const blob=await resize(cv)
-    setPreview(URL.createObjectURL(blob))
-    setDot('active');setStatus('Reading card…')
-    try {
-      // Upload to Render backend → Supabase Storage + Gemini extraction
-      const imageFile = new File([blob], 'card.jpg', { type:'image/jpeg' })
-      const { data } = await scanCard(imageFile)
-      setExtracted(data.extracted || {})
-      setImagePath(data.image_path)
-      setImageUrl(data.image_url)  // signed preview URL (5 min TTL)
-      const n = Object.values(data.extracted||{}).filter(Boolean).length
-      setDot('done'); setStatus(n ? `${n} detail${n>1?'s':''} extracted` : 'Card saved — enter details manually')
-    } catch(e) { setDot('warn'); setStatus('Could not extract — enter details manually') }
+    setNoteBlob(blob);setNotePreview(URL.createObjectURL(blob))
   }
 
-  async function handleConfirm() {
-    if (!extracted.email?.trim()) return toast('Add an email to draft an email','error')
-    setLoading(true)
+  async function processNotes() {
+    if(!noteBlob)return
+    setLoading(true);setDot('active');setStatus('Reading handwritten notes…')
     try {
-      // Save confirmed contact to DB
-      const { data } = await confirmContact(extracted, imagePath, {})
-      setContactId(data.id)
-      setContactData(data.contact)
-      setStep(STEP.VOICE)
-    } catch { toast('Failed to save contact','error') }
-    finally { setLoading(false) }
-  }
-
-  async function startRec() {
-    try {
-      const stream=await navigator.mediaDevices.getUserMedia({audio:true})
-      chunksRef.current=[]
-      const mr=new MediaRecorder(stream);mrRef.current=mr
-      mr.ondataavailable=e=>chunksRef.current.push(e.data)
-      mr.onstop=async()=>{
-        stream.getTracks().forEach(t=>t.stop())
-        const blob=new Blob(chunksRef.current,{type:'audio/webm'})
-        setLoading(true)
-        try{const {data}=await transcribeVoice(blob);setInstruction(data.transcript||'')}
-        catch{toast('Could not transcribe','error')}
-        finally{setLoading(false)}
-      }
-      mr.start();setRecording(true)
-    } catch{toast('Microphone access denied','error')}
-  }
-  function stopRec(){setTimeout(()=>{try{mrRef.current?.stop()}catch{}},100);setRecording(false)}
-
-  async function handleDraft() {
-    if(!instruction.trim())return toast('Tell me what to write first','error')
-    setLoading(true)
-    try {
-      let data
-      if (contactId) {
-        // Use DB contact — richer context
-        const res = await draftEmail(contactId, instruction)
-        data = res.data
-      } else {
-        // Fallback — contact not yet confirmed
-        const res = await draftQuickEmail(extracted, instruction)
-        data = res.data
-      }
-      setDraft(data);setStep(STEP.DRAFT)
-      setTimeout(()=>speak(`Subject: ${data.subject}. ${data.body}`.slice(0,600)),400)
-    } catch{toast('Failed to draft email','error')}
+      const imageFile = new File([noteBlob], 'notes.jpg', { type:'image/jpeg' })
+      const { data } = await processMeetingNotes(imageFile, title||'Meeting')
+      setResult(data);setDot('done');setStatus('Minutes ready')
+    } catch(e){setDot('warn');setStatus('Could not process — try again');toast(e?.response?.data?.detail||'Error','error')}
     finally{setLoading(false)}
   }
 
-  async function handleSend() {
-    stop();setSending(true)
+  async function startRecording() {
+    if (!title.trim()) return toast('Enter a meeting title first','error')
     try {
-      let data
-      if (contactId) {
-        const res = await sendEmail(contactId, draft.subject, draft.body, instruction)
-        data = res.data
+      // Create meeting in DB first
+      const { data } = await startMeeting(title)
+      setMeetingId(data.meeting_id)
+
+      const stream=await navigator.mediaDevices.getUserMedia({audio:true})
+      streamRef.current=stream
+      chunksRef.current=[]
+      const mimeType=getSupportedMimeType()
+      const mr=new MediaRecorder(stream,mimeType?{mimeType}:{});mrRef.current=mr
+      mr.ondataavailable=e=>{if(e.data.size>0)chunksRef.current.push(e.data)}
+      mr.start(1000);setRecording(true);setElapsed(0)
+      setDot('active');setStatus('Recording…')
+      timerRef.current=setInterval(()=>setElapsed(s=>s+1),1000)
+    } catch(e){toast('Could not start recording: '+e.message,'error')}
+  }
+
+  async function stopRecording() {
+    clearInterval(timerRef.current);setRecording(false)
+    setLoading(true);setDot('active');setStatus('Uploading…')
+    const mimeType=mrRef.current?.mimeType||'audio/webm'
+
+    await new Promise(resolve=>{
+      mrRef.current.onstop=resolve
+      streamRef.current?.getTracks().forEach(t=>t.stop());streamRef.current=null
+      try{mrRef.current.stop()}catch{}
+    })
+
+    const blob=new Blob(chunksRef.current,{type:mimeType})
+    try {
+      // Upload to Render → Supabase Storage → triggers Celery worker
+      await uploadMeetingAudio(meetingId, blob)
+      setStatus('Processing — this may take a minute…')
+      // Poll for completion
+      pollMeeting(meetingId)
+    } catch(e){setDot('warn');setStatus('Upload failed');toast(e?.response?.data?.detail||'Upload failed','error');setLoading(false)}
+  }
+
+  async function pollMeeting(id, attempts=0) {
+    if (attempts > 30) {
+      setDot('warn');setStatus('Processing taking longer than expected — check back soon');setLoading(false)
+      return
+    }
+    try {
+      const { data } = await getMeeting(id)
+      if (data.status === 'done') {
+        setResult(data);setDot('done');setStatus('Minutes ready');setLoading(false)
+      } else if (data.status === 'failed') {
+        setDot('warn');setStatus('Processing failed: '+(data.processing_error||'unknown error'));setLoading(false)
       } else {
-        const res = await sendQuickEmail(extracted.email, draft.subject, draft.body)
-        data = res.data
+        const t = setTimeout(()=>pollMeeting(id, attempts+1), 4000)
+        setPollTimer(t)
       }
-      setSendResult(data);setStep(STEP.SENT)
-    } catch{toast('Failed to send','error')}
-    finally{setSending(false)}
+    } catch {
+      const t = setTimeout(()=>pollMeeting(id, attempts+1), 5000)
+      setPollTimer(t)
+    }
   }
 
   function reset() {
-    stop();streamRef.current?.getTracks().forEach(t=>t.stop());streamRef.current=null
-    setStep(STEP.SCAN);setArmed(false);setDot('idle');setStatus('Ready to scan')
-    setPreview(null);setExtracted({});setImagePath(null);setImageUrl(null)
-    setContactId(null);setContactData(null);setInstruction('');setDraft(null);setSendResult(null)
+    setMode(null);setResult(null);setTitle('');setMeetingId(null)
+    setStatus('');setDot('idle');setNoteBlob(null);setNotePreview(null);setCameraOpen(false)
+    setRecording(false);setElapsed(0)
+    streamRef.current?.getTracks().forEach(t=>t.stop());streamRef.current=null
     if(videoRef.current){videoRef.current.style.display='none';videoRef.current.srcObject=null}
+    clearInterval(timerRef.current)
+    try{mrRef.current?.stop()}catch{}
   }
 
-  const hasFields = Object.values(extracted).some(Boolean)
+  if(result) return (
+    <div className="t-content" style={{paddingTop:16}}>
+      <div className="t-card success">
+        <div className="t-card-head">
+          <div className="t-icon ti-green"><i className="ti ti-check" aria-hidden="true"/></div>
+          <div><div className="t-ct">{result.title||'Meeting'}</div><div className="t-cs">Minutes ready</div></div>
+        </div>
+        {result.summary&&(
+          <div style={{background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:10,padding:12,marginBottom:12}}>
+            <div style={{fontSize:11,fontWeight:700,color:'#065f46',textTransform:'uppercase',letterSpacing:'.4px',marginBottom:6}}>Summary</div>
+            <p style={{fontSize:13.5,color:'#1a1a1a',lineHeight:1.6,margin:0}}>{result.summary}</p>
+          </div>
+        )}
+        {result.action_items?.length>0&&(
+          <div style={{marginBottom:12}}>
+            <div style={{fontSize:11,fontWeight:700,color:'#1e40af',textTransform:'uppercase',letterSpacing:'.4px',marginBottom:10}}>Action items</div>
+            {result.action_items.map((item,i)=>(
+              <div key={i} style={{display:'flex',gap:9,marginBottom:10,alignItems:'flex-start'}}>
+                <div style={{width:22,height:22,borderRadius:'50%',background:'#dbeafe',border:'1.5px solid #93c5fd',display:'flex',alignItems:'center',justifyContent:'center',fontSize:11,fontWeight:600,color:'#1e40af',flexShrink:0,marginTop:1}}>{i+1}</div>
+                <div>
+                  <div style={{fontSize:13.5,color:'#1a1a1a',lineHeight:1.5}}>{item.task}</div>
+                  <div style={{fontSize:12,color:'#6b7280',marginTop:2,display:'flex',gap:12}}>
+                    {item.owner&&item.owner!=='TBD'&&<span>👤 {item.owner}</span>}
+                    {item.due&&item.due!=='TBD'&&<span>📅 {item.due}</span>}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        {result.mom&&(
+          <details style={{marginBottom:12}}>
+            <summary style={{fontSize:13,fontWeight:600,color:'#6b7280',cursor:'pointer',userSelect:'none',listStyle:'none'}}>
+              <i className="ti ti-file-text" style={{fontSize:16}} aria-hidden="true"/> Full minutes
+            </summary>
+            <div style={{fontSize:13,color:'#1a1a1a',lineHeight:1.7,whiteSpace:'pre-wrap',background:'#f9f9f8',borderRadius:9,padding:12,marginTop:8}}>
+              {result.mom}
+            </div>
+          </details>
+        )}
+        <a href={`mailto:?subject=${encodeURIComponent('MOM: '+(result.title||'Meeting'))}&body=${encodeURIComponent(result.mom||result.summary||'')}`}
+          className="t-btn t-btn-primary" style={{textDecoration:'none',display:'flex'}}>
+          <i className="ti ti-mail" aria-hidden="true"/> Email MOM to myself
+        </a>
+        <button className="t-btn t-btn-ghost" onClick={reset}>
+          <i className="ti ti-plus" aria-hidden="true"/> New meeting
+        </button>
+      </div>
+    </div>
+  )
 
   return (
     <div className="t-content" style={{paddingTop:16}}>
-      <div>
-        <div className="t-steps">
-          {['Scan','Email','Done'].map((_,i)=>(
-            <div key={i} className="t-step-bar" style={{background:step>i?'#1a1a1a':step===i?'#6b7280':'#e5e5e4'}}/>
-          ))}
+      <div className="t-card">
+        <div className="t-card-head">
+          <div className="t-icon ti-gray"><i className="ti ti-calendar" aria-hidden="true"/></div>
+          <div><div className="t-ct">New meeting</div><div className="t-cs">Enter title then choose an option</div></div>
         </div>
-        <div className="t-step-labels">
-          {['Scan','Email','Done'].map((l,i)=>(<span key={i} className={step===i?'t-step-active':''}>{l}</span>))}
-        </div>
+        <input className="t-input" placeholder="Meeting title — e.g. Client call with Rahul"
+          value={title} onChange={e=>setTitle(e.target.value)} disabled={loading||recording}/>
       </div>
 
-      {step===STEP.SCAN&&(
-        <div className="t-card">
-          <div className="t-card-head">
-            <div className="t-icon ti-amber"><i className="ti ti-id" aria-hidden="true"/></div>
-            <div><div className="t-ct">Visiting card</div><div className="t-cs">Scan to extract contact details</div></div>
-          </div>
-          <div className="t-camera-preview" style={{display:preview||armed?'block':'flex'}}>
-            <video ref={videoRef} autoPlay playsInline muted style={{display:'none',width:'100%',height:'100%',objectFit:'cover',borderRadius:12}}/>
-            {preview&&<img src={preview} style={{width:'100%',height:'100%',objectFit:'cover',borderRadius:12}} alt="Card"/>}
-            {!preview&&!armed&&<><i className="ti ti-id" style={{fontSize:40,color:'#d1d5db'}} aria-hidden="true"/><span style={{fontSize:13,color:'#9ca3af',marginTop:6}}>Camera preview</span></>}
-          </div>
-          <button className={`t-btn ${dot==='done'?'t-btn-green':'t-btn-primary'}`} onClick={handleScan}>
-            <i className={`ti ${armed?'ti-camera-selfie':dot==='done'?'ti-refresh':'ti-camera'}`} aria-hidden="true"/>
-            {armed?'Snap card':dot==='done'?'Rescan':'Scan visiting card'}
-          </button>
-          <div className="t-dot-row">
-            <span className={`t-dot t-dot-${dot}`}/>
-            <span>{status}</span>
-            {imageUrl&&<a href={imageUrl} target="_blank" rel="noreferrer" style={{marginLeft:'auto',fontSize:12,color:'#1a73e8',textDecoration:'none'}}>Preview ↗</a>}
-          </div>
-          {hasFields&&(
-            <div className="t-ef">
-              <div className="t-ef-head">Extracted details</div>
-              {[['Name','name'],['Role','role'],['Email','email'],['Phone','phone'],['Company','company'],['Website','website']].map(([l,k])=>(
-                <div key={k} className="t-ef-row">
-                  <span className="t-ef-key">{l}</span>
-                  <span style={{flex:1}}>
-                    <input value={extracted[k]||''} onChange={e=>setExtracted(p=>({...p,[k]:e.target.value}))} placeholder={`Enter ${l.toLowerCase()}…`}/>
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-          {hasFields&&(
-            <button className="t-btn t-btn-primary" style={{marginTop:12}} onClick={handleConfirm} disabled={loading}>
-              {loading?'Saving…':<><i className="ti ti-mail" aria-hidden="true"/> Save and write email</>}
-            </button>
-          )}
+      {/* Notes scan */}
+      <div className={`t-card ${mode==='notes'?'accent':''}`}>
+        <div className="t-card-head">
+          <div className="t-icon ti-amber"><i className="ti ti-pencil" aria-hidden="true"/></div>
+          <div><div className="t-ct">Scan handwritten notes</div><div className="t-cs">Photo → AI minutes + tasks</div></div>
         </div>
-      )}
-
-      {step===STEP.VOICE&&(
-        <div className="t-card">
-          <div className="t-card-head">
-            <div className="t-icon ti-green"><i className="ti ti-microphone" aria-hidden="true"/></div>
-            <div><div className="t-ct">What should the email say?</div><div className="t-cs">To {extracted.name||extracted.email||'contact'}</div></div>
-          </div>
-          <button className={`t-btn ${recording?'t-btn-red':'t-btn-ghost'}`}
-            onMouseDown={startRec} onMouseUp={stopRec} onTouchStart={startRec} onTouchEnd={stopRec} style={{userSelect:'none'}}>
-            <i className={`ti ${recording?'ti-microphone-off':'ti-microphone'}`} aria-hidden="true"/>
-            {recording?'Release to stop':'Hold to speak'}
+        {mode!=='notes'?(
+          <button className="t-btn t-btn-amber" onClick={()=>{if(!title.trim())return toast('Enter a meeting title first','error');setMode('notes');setTimeout(()=>openCamera(),50)}}>
+            <i className="ti ti-pencil" aria-hidden="true"/> Scan notes
           </button>
-          {loading&&<div className="t-dot-row"><span className="t-dot t-dot-active"/><span>Transcribing…</span></div>}
-          <textarea className="t-input" rows={3} placeholder="Or type your instruction here…"
-            value={instruction} onChange={e=>setInstruction(e.target.value)} style={{marginTop:10,resize:'vertical',minHeight:80}}/>
-          <button className="t-btn t-btn-primary" onClick={handleDraft} disabled={loading||!instruction.trim()}>
-            {loading?'Drafting…':<><i className="ti ti-wand" aria-hidden="true"/> Draft email</>}
-          </button>
-          <button className="t-btn t-btn-ghost" onClick={()=>setStep(STEP.SCAN)}>← Back</button>
-        </div>
-      )}
-
-      {step===STEP.DRAFT&&draft&&(
-        <div className="t-card">
-          <div className="t-card-head">
-            <div className="t-icon ti-blue"><i className="ti ti-mail" aria-hidden="true"/></div>
-            <div style={{flex:1}}>
-              <div className="t-ct">Email draft</div>
-              <div className="t-cs">{isSpeaking?'Reading aloud…':'Review and send'}</div>
-            </div>
-            <button onClick={isSpeaking?stop:()=>speak(`Subject: ${draft.subject}. ${draft.body}`.slice(0,600))}
-              style={{background:'none',border:'1px solid #e5e5e4',borderRadius:8,padding:'5px 10px',fontSize:12,cursor:'pointer',color:'#6b7280',fontFamily:'inherit'}}>
-              {isSpeaking?'Stop':'▶ Replay'}
-            </button>
-          </div>
-          <div style={{marginBottom:10}}>
-            <label style={{fontSize:11,fontWeight:600,color:'#6b7280',display:'block',marginBottom:4,textTransform:'uppercase',letterSpacing:'.3px'}}>Subject</label>
-            <input className="t-input" value={draft.subject} onChange={e=>setDraft(d=>({...d,subject:e.target.value}))}/>
-          </div>
-          <div>
-            <label style={{fontSize:11,fontWeight:600,color:'#6b7280',display:'block',marginBottom:4,textTransform:'uppercase',letterSpacing:'.3px'}}>Body</label>
-            <textarea className="t-input" rows={7} value={draft.body} onChange={e=>setDraft(d=>({...d,body:e.target.value}))} style={{resize:'vertical'}}/>
-          </div>
-          <button className="t-btn t-btn-primary" onClick={handleSend} disabled={sending}>
-            {sending?'Sending…':<><i className="ti ti-send" aria-hidden="true"/> Send email</>}
-          </button>
-          <button className="t-btn t-btn-ghost" onClick={()=>{stop();setStep(STEP.VOICE)}}>← Edit instruction</button>
-        </div>
-      )}
-
-      {step===STEP.SENT&&(
-        <div className="t-card">
-          {sendResult?.method==='gmail'?(
-            <div style={{textAlign:'center',padding:'24px 0'}}>
-              <div style={{fontSize:44,marginBottom:12}}>✅</div>
-              <div className="t-ct" style={{fontSize:16}}>Email sent!</div>
-              <div className="t-cs" style={{marginTop:4}}>Delivered via Gmail</div>
-            </div>
-          ):(
-            <>
-              <div className="t-card-head">
-                <div className="t-icon ti-amber"><i className="ti ti-info-circle" aria-hidden="true"/></div>
-                <div><div className="t-ct">Gmail not connected yet</div><div className="t-cs">Use one of these to send</div></div>
+        ):(
+          <>
+            <video ref={videoRef} autoPlay playsInline muted style={{display:'none',width:'100%',borderRadius:11,marginBottom:10,background:'#000',aspectRatio:'4/3',objectFit:'cover'}}/>
+            {notePreview&&<img src={notePreview} alt="Notes" style={{width:'100%',borderRadius:11,marginBottom:10,aspectRatio:'4/3',objectFit:'cover'}}/>}
+            {!cameraOpen&&!noteBlob&&!loading&&<button className="t-btn t-btn-amber" onClick={openCamera}><i className="ti ti-camera" aria-hidden="true"/> Open camera</button>}
+            {cameraOpen&&<button className="t-btn t-btn-green" onClick={snapPhoto}><i className="ti ti-camera-selfie" aria-hidden="true"/> Snap photo</button>}
+            {noteBlob&&!loading&&(
+              <div style={{display:'flex',gap:8}}>
+                <button className="t-btn t-btn-ghost" style={{flex:1}} onClick={()=>{setNoteBlob(null);setNotePreview(null);openCamera()}}><i className="ti ti-refresh" aria-hidden="true"/> Retake</button>
+                <button className="t-btn t-btn-primary" style={{flex:2,marginTop:0}} onClick={processNotes}><i className="ti ti-wand" aria-hidden="true"/> Process notes</button>
               </div>
-              <a href={sendResult?.mailto} className="t-btn t-btn-primary" style={{textDecoration:'none',display:'flex'}}>
-                <i className="ti ti-mail" aria-hidden="true"/> Open in mail app
-              </a>
-              <button className="t-btn t-btn-ghost" onClick={()=>{navigator.clipboard.writeText(draft?.body||'');toast('Copied!','success')}}>
-                <i className="ti ti-copy" aria-hidden="true"/> Copy email body
-              </button>
-            </>
-          )}
-          <button className="t-btn t-btn-ghost" style={{marginTop:12}} onClick={reset}>
-            <i className="ti ti-refresh" aria-hidden="true"/> Scan another card
-          </button>
+            )}
+            {loading&&<div className="t-dot-row"><span className="t-dot t-dot-active"/><span>{status}</span></div>}
+          </>
+        )}
+      </div>
+
+      {/* Record */}
+      <div className={`t-card ${mode==='record'?'danger':''}`}>
+        <div className="t-card-head">
+          <div className="t-icon ti-red"><i className="ti ti-microphone" aria-hidden="true"/></div>
+          <div><div className="t-ct">Record meeting</div><div className="t-cs">Live audio → STT → AI minutes + tasks</div></div>
         </div>
-      )}
+        {mode!=='record'?(
+          <button className="t-btn t-btn-primary" onClick={()=>{setMode('record');setTimeout(()=>startRecording(),50)}}>
+            <i className="ti ti-microphone" aria-hidden="true"/> Start recording
+          </button>
+        ):(
+          <>
+            {recording&&(
+              <div style={{background:'#fef2f2',border:'1px solid #fecaca',borderRadius:11,padding:'14px 16px',marginBottom:10}}>
+                <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:10}}>
+                  <div style={{width:9,height:9,borderRadius:'50%',background:'#ef4444',animation:'tdot 1s infinite'}}/>
+                  <span style={{fontFamily:'monospace',fontSize:22,color:'#ef4444',fontWeight:600}}>{fmt(elapsed)}</span>
+                  <span style={{fontSize:13,color:'#6b7280'}}>Recording…</span>
+                </div>
+                <button className="t-btn t-btn-red" onClick={stopRecording}><i className="ti ti-square" aria-hidden="true"/> Stop and process</button>
+              </div>
+            )}
+            {!recording&&!loading&&<button className="t-btn t-btn-red" onClick={startRecording}><i className="ti ti-circle" aria-hidden="true"/> Start recording</button>}
+            {loading&&!recording&&<div className="t-dot-row"><span className="t-dot t-dot-active"/><span>{status}</span></div>}
+            {dot==='warn'&&!loading&&!recording&&<div className="t-dot-row"><span className="t-dot t-dot-warn"/><span>{status}</span></div>}
+          </>
+        )}
+      </div>
+      <style>{`@keyframes tdot{50%{opacity:.3}}`}</style>
     </div>
   )
 }
