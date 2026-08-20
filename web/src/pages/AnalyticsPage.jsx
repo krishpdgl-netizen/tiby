@@ -1,7 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { getUserContext } from '../services/userProfile'
-
-const APPS_SCRIPT_URL = import.meta.env.VITE_APPS_SCRIPT_URL || ''
+import { getAnalytics, listTasks, completeTask, reopenTask, prioritizeTasks, generateEOD } from '../services/api'
 
 const PRIORITY_STYLE = {
   high:   { bg:'#fee2e2', color:'#991b1b', label:'High' },
@@ -11,69 +9,39 @@ const PRIORITY_STYLE = {
 }
 
 export default function AnalyticsPage() {
-  const [stats, setStats]         = useState(null)
-  const [tasks, setTasks]         = useState([])
-  const [loading, setLoading]     = useState(true)
-  const [prioritising, setPri]    = useState(false)
-  const [filter, setFilter]       = useState('all')
-  const [userCtx, setUserCtx]     = useState({})
-  const [eodSummary, setEod]      = useState(null)
-  const [eodLoading, setEodLoad]  = useState(false)
-  const [sheetUrl, setSheetUrl]   = useState(null)
-  const ctxRef = useRef({})
+  const [stats, setStats]       = useState(null)
+  const [tasks, setTasks]       = useState([])
+  const [loading, setLoading]   = useState(true)
+  const [prioritising, setPri]  = useState(false)
+  const [filter, setFilter]     = useState('all')
+  const [eodSummary, setEod]    = useState(null)
+  const [eodLoading, setEodLoad]= useState(false)
+  const [priorities, setPriorities] = useState({}) // taskId → {priority, reason}
 
-  useEffect(() => {
-    getUserContext().then(ctx => {
-      setUserCtx(ctx)
-      ctxRef.current = ctx
-      if (ctx.sheet_id) setSheetUrl(`https://docs.google.com/spreadsheets/d/${ctx.sheet_id}`)
-      loadAll(ctx)
-    })
-  }, [])
+  useEffect(() => { loadAll() }, [])
 
-  // Refresh tasks when page becomes visible (tab switch fix)
+  // Refresh when tab becomes visible
   useEffect(() => {
-    function onVisible() {
-      if (document.visibilityState === 'visible' && ctxRef.current?.sheet_id) {
-        loadAll(ctxRef.current)
-      }
-    }
+    function onVisible() { if (document.visibilityState === 'visible') loadAll() }
     document.addEventListener('visibilitychange', onVisible)
     return () => document.removeEventListener('visibilitychange', onVisible)
   }, [])
 
-  async function loadAll(ctx = ctxRef.current) {
-    if (!ctx?.sheet_id) { setLoading(false); return }
+  async function loadAll() {
     setLoading(true)
-    const sid = `&sheet_id=${ctx.sheet_id}`
     try {
-      const [aRes, tRes] = await Promise.all([
-        fetch(`${APPS_SCRIPT_URL}?action=get-analytics${sid}`),
-        fetch(`${APPS_SCRIPT_URL}?action=get-tasks${sid}`),
-      ])
-      const [a, t] = await Promise.all([aRes.json(), tRes.json()])
-      if (a.status==='success') setStats(a)
-      if (t.status==='success') setTasks(t.tasks||[])
+      const [statsRes, tasksRes] = await Promise.all([getAnalytics(), listTasks()])
+      setStats(statsRes.data)
+      setTasks(tasksRes.data || [])
     } catch(e) { console.error(e) }
     finally { setLoading(false) }
   }
 
   async function markDone(task) {
-    // Optimistic update
     setTasks(prev => prev.map(t => t.id===task.id ? {...t,status:'done'} : t))
     try {
-      const res = await fetch(APPS_SCRIPT_URL, {
-        method:'POST',
-        body: JSON.stringify({ action:'mark-done', row:task.row, sheet_id:userCtx.sheet_id }),
-      })
-      const data = await res.json()
-      if (data.status!=='success') {
-        // Revert on failure
-        setTasks(prev => prev.map(t => t.id===task.id ? {...t,status:'pending'} : t))
-      } else {
-        // Update stats
-        setStats(s => s ? {...s, tasks_pending:(s.tasks_pending||1)-1, tasks_done:(s.tasks_done||0)+1} : s)
-      }
+      await completeTask(task.id)
+      setStats(s => s ? {...s, tasks_pending:Math.max(0,(s.tasks_pending||1)-1), tasks_done:(s.tasks_done||0)+1} : s)
     } catch {
       setTasks(prev => prev.map(t => t.id===task.id ? {...t,status:'pending'} : t))
     }
@@ -82,67 +50,41 @@ export default function AnalyticsPage() {
   async function markPending(task) {
     setTasks(prev => prev.map(t => t.id===task.id ? {...t,status:'pending'} : t))
     try {
-      await fetch(APPS_SCRIPT_URL, {
-        method:'POST',
-        body: JSON.stringify({ action:'mark-pending', row:task.row, sheet_id:userCtx.sheet_id }),
-      })
+      await reopenTask(task.id)
       setStats(s => s ? {...s, tasks_pending:(s.tasks_pending||0)+1, tasks_done:Math.max(0,(s.tasks_done||1)-1)} : s)
     } catch {
       setTasks(prev => prev.map(t => t.id===task.id ? {...t,status:'done'} : t))
     }
   }
 
-  async function prioritise() {
-    if (!userCtx.sheet_id) return
+  async function handlePrioritise() {
     setPri(true)
     try {
-      const res  = await fetch(`${APPS_SCRIPT_URL}?action=prioritise&sheet_id=${userCtx.sheet_id}`)
-      const data = await res.json()
-      if (data.priorities) {
-        // priorities is indexed array matching pending tasks order
-        const pending = tasks.filter(t=>t.status==='pending')
-        setTasks(prev => prev.map(t => {
-          if (t.status!=='pending') return t
-          const idx = pending.findIndex(p=>p.id===t.id)
-          const p   = data.priorities[idx]
-          return p ? {...t, priority:p.priority, reason:p.reason} : t
-        }))
-      }
+      const res = await prioritizeTasks()
+      const pending = tasks.filter(t=>t.status==='pending')
+      const map = {}
+      ;(res.data?.priorities || []).forEach((p,i) => {
+        if (pending[i]) map[pending[i].id] = p
+      })
+      setPriorities(map)
     } catch {}
     finally { setPri(false) }
   }
 
-  async function generateEOD() {
-    if (!userCtx.sheet_id) return
+  async function handleEOD() {
     setEodLoad(true)
     try {
-      const res  = await fetch(APPS_SCRIPT_URL, {
-        method:'POST',
-        body: JSON.stringify({ action:'generate-eod', sheet_id:userCtx.sheet_id }),
-      })
-      const data = await res.json()
-      if (data.status==='success') setEod(data)
+      const res = await generateEOD()
+      setEod(res.data)
     } catch {}
     finally { setEodLoad(false) }
   }
 
   const filtered = tasks.filter(t =>
-    filter==='all'     ? true :
-    filter==='pending' ? t.status==='pending' :
-    t.status==='done'
+    filter==='all' ? true : filter==='pending' ? t.status==='pending' : t.status==='done'
   )
   const pending = tasks.filter(t=>t.status==='pending').length
   const done    = tasks.filter(t=>t.status==='done').length
-
-  if (!userCtx.sheet_id && !loading) return (
-    <div className="t-content" style={{paddingTop:16}}>
-      <div className="t-card" style={{textAlign:'center',padding:'28px 16px'}}>
-        <i className="ti ti-chart-bar" style={{fontSize:36,color:'#d1d5db',display:'block',marginBottom:10}} aria-hidden="true"/>
-        <div className="t-ct" style={{marginBottom:6}}>No personal sheet yet</div>
-        <div className="t-cs">Go to Settings → Create my sheet to get started</div>
-      </div>
-    </div>
-  )
 
   return (
     <div className="t-content" style={{paddingTop:16}}>
@@ -193,7 +135,7 @@ export default function AnalyticsPage() {
             <div className="t-cs">AI review of today + what's next</div>
           </div>
           <button className="t-btn t-btn-amber" style={{width:'auto',padding:'6px 12px',fontSize:12,marginTop:0}}
-            onClick={generateEOD} disabled={eodLoading}>
+            onClick={handleEOD} disabled={eodLoading}>
             {eodLoading?'Generating…':'Generate'}
           </button>
         </div>
@@ -219,12 +161,12 @@ export default function AnalyticsPage() {
             <div className="t-cs">{pending} pending · {done} done</div>
           </div>
           <button className="t-btn t-btn-ghost" style={{width:'auto',padding:'6px 12px',fontSize:12,marginTop:0}}
-            onClick={prioritise} disabled={prioritising}>
+            onClick={handlePrioritise} disabled={prioritising}>
             <i className="ti ti-sparkles" aria-hidden="true"/>
             {prioritising?'…':'AI Prioritise'}
           </button>
           <button className="t-btn t-btn-ghost" style={{width:'auto',padding:'6px 10px',fontSize:12,marginTop:0}}
-            onClick={()=>loadAll()} disabled={loading}>
+            onClick={loadAll} disabled={loading}>
             <i className="ti ti-refresh" aria-hidden="true"/>
           </button>
         </div>
@@ -250,13 +192,12 @@ export default function AnalyticsPage() {
           <div style={{display:'flex',flexDirection:'column',gap:8}}>
             {filtered.map(task=>{
               const isDone = task.status==='done'
-              const ps = PRIORITY_STYLE[task.priority||'']
+              const p = priorities[task.id]
+              const ps = PRIORITY_STYLE[p?.priority||'']
               return (
                 <div key={task.id} style={{
-                  display:'flex',gap:10,alignItems:'flex-start',
-                  padding:'10px 12px',borderRadius:10,
-                  background:isDone?'#f9f9f8':'#fff',
-                  border:'1px solid #f0f0ef',opacity:isDone?.7:1,transition:'all .15s',
+                  display:'flex',gap:10,alignItems:'flex-start',padding:'10px 12px',borderRadius:10,
+                  background:isDone?'#f9f9f8':'#fff',border:'1px solid #f0f0ef',opacity:isDone?.7:1,transition:'all .15s',
                 }}>
                   <button onClick={()=>isDone?markPending(task):markDone(task)}
                     style={{width:20,height:20,borderRadius:6,border:`1.5px solid ${isDone?'#10b981':'#d1d5db'}`,
@@ -269,13 +210,13 @@ export default function AnalyticsPage() {
                       {task.title}
                     </div>
                     <div style={{display:'flex',gap:10,marginTop:4,flexWrap:'wrap'}}>
-                      {task.meeting&&<span style={{fontSize:11.5,color:'#9ca3af'}}><i className="ti ti-microphone" style={{fontSize:11}} aria-hidden="true"/> {task.meeting}</span>}
-                      {task.owner&&task.owner!=='TBD'&&<span style={{fontSize:11.5,color:'#9ca3af'}}>👤 {task.owner}</span>}
-                      {task.due&&task.due!=='TBD'&&<span style={{fontSize:11.5,color:'#9ca3af'}}>📅 {task.due}</span>}
-                      {task.reason&&<span style={{fontSize:11.5,color:'#6b7280',fontStyle:'italic'}}>{task.reason}</span>}
+                      {task.source==='meeting'&&<span style={{fontSize:11.5,color:'#9ca3af'}}><i className="ti ti-microphone" style={{fontSize:11}} aria-hidden="true"/> Meeting</span>}
+                      {task.owner&&task.owner!=='Me'&&<span style={{fontSize:11.5,color:'#9ca3af'}}>👤 {task.owner}</span>}
+                      {task.due_date&&<span style={{fontSize:11.5,color:'#9ca3af'}}>📅 {task.due_date}</span>}
+                      {p?.reason&&<span style={{fontSize:11.5,color:'#6b7280',fontStyle:'italic'}}>{p.reason}</span>}
                     </div>
                   </div>
-                  {task.priority&&(
+                  {p?.priority&&(
                     <div style={{padding:'2px 8px',borderRadius:20,background:ps.bg,color:ps.color,fontSize:11,fontWeight:600,flexShrink:0}}>
                       {ps.label}
                     </div>
@@ -286,13 +227,6 @@ export default function AnalyticsPage() {
           </div>
         )}
       </div>
-
-      {sheetUrl&&(
-        <a href={sheetUrl} target="_blank" rel="noreferrer"
-          className="t-btn t-btn-ghost" style={{textDecoration:'none',display:'flex'}}>
-          <i className="ti ti-external-link" aria-hidden="true"/> View all in Sheets
-        </a>
-      )}
     </div>
   )
 }
