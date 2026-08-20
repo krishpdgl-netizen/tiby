@@ -30,4 +30,3 @@ class AgentChatResponse(BaseModel):
     run_id: str
     reply: str
     actions: list[dict]
-email-validator==2.2.0
