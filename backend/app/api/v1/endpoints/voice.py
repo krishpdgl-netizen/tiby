@@ -1,33 +1,21 @@
-"""
-Voice API — short audio clips → text transcription.
-Used for: voice commands when drafting emails (what does the user want to say?)
-"""
-from fastapi import APIRouter, File, UploadFile, HTTPException
+from fastapi import APIRouter, Depends, File, UploadFile, HTTPException
+from app.core.auth import CurrentUser
+from app.core.config import settings
+from app.core.rate_limit import enforce_rate_limit
 from app.services.stt_service import transcribe_audio
 
-router = APIRouter(prefix="/voice", tags=["voice"])
+router = APIRouter(prefix='/voice', tags=['voice'])
 
 
-@router.post("/transcribe")
-async def transcribe_voice(
-    file: UploadFile = File(...),
-):
-    """
-    Transcribe a short voice clip (user's email instruction or command).
-    Returns: {transcript, confidence}
-    Max 5 MB, under 30 seconds recommended for commands.
-    """
-    allowed = ("audio/webm", "audio/mp4", "audio/mpeg", "audio/wav", "audio/ogg")
-    if file.content_type not in allowed:
-        raise HTTPException(400, f"Unsupported audio type: {file.content_type}")
-
-    audio_bytes = await file.read()
-    if len(audio_bytes) > 5 * 1024 * 1024:
-        raise HTTPException(400, "Voice clip too large (max 5MB)")
-
-    result = await transcribe_audio(audio_bytes, mime_type=file.content_type, is_meeting=False)
-
-    return {
-        "transcript": result["transcript"],
-        "confidence": result["confidence"],
-    }
+@router.post('/transcribe')
+async def transcribe(user: CurrentUser, file: UploadFile = File(...)):
+    await enforce_rate_limit(str(user.id), 'voice', settings.AI_RATE_LIMIT_PER_MINUTE)
+    allowed = {'audio/webm', 'audio/mp4', 'audio/mpeg', 'audio/ogg', 'audio/wav', 'audio/webm;codecs=opus'}
+    ct = (file.content_type or '').split(';')[0].strip()
+    if ct not in allowed and not ct.startswith('audio/'):
+        raise HTTPException(400, f'Unsupported audio type: {file.content_type}')
+    data = await file.read(settings.MAX_VOICE_BYTES + 1)
+    if len(data) > settings.MAX_VOICE_BYTES:
+        raise HTTPException(413, 'Audio file too large')
+    result = await transcribe_audio(data)
+    return {'transcript': result.get('transcript', ''), 'duration': result.get('duration')}
