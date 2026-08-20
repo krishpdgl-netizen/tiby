@@ -1,8 +1,14 @@
 {
-  "rewrites": [
-    { "source": "/(.*)", "destination": "/index.html" }
-  ],
+  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }],
   "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
+        { "key": "Permissions-Policy", "value": "geolocation=(), camera=(self), microphone=(self)" }
+      ]
+    },
     {
       "source": "/sw.js",
       "headers": [
@@ -10,9 +16,6 @@
         { "key": "Service-Worker-Allowed", "value": "/" }
       ]
     },
-    {
-      "source": "/manifest.json",
-      "headers": [{ "key": "Cache-Control", "value": "no-cache" }]
-    }
+    { "source": "/manifest.json", "headers": [{ "key": "Cache-Control", "value": "no-cache" }] }
   ]
 }
