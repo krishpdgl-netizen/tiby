@@ -1,7 +1,7 @@
 import enum
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import String, Text, Boolean, DateTime, ForeignKey, JSON, Enum as SAEnum, Integer, Index
+from sqlalchemy import String, Text, Boolean, DateTime, ForeignKey, JSON, Integer, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
 from app.core.database import Base
@@ -92,7 +92,7 @@ class Meeting(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     title: Mapped[str | None] = mapped_column(String(500))
-    status: Mapped[MeetingStatus] = mapped_column(SAEnum(MeetingStatus), default=MeetingStatus.recording)
+    status: Mapped[str] = mapped_column(String(50), default='recording')
     # Changed from audio_url (public) to audio_path (private Supabase Storage)
     audio_path: Mapped[str | None] = mapped_column(String(1000))
     duration_seconds: Mapped[int | None] = mapped_column(Integer)
@@ -119,7 +119,7 @@ class Task(Base):
     description: Mapped[str | None] = mapped_column(Text)
     owner: Mapped[str | None] = mapped_column(String(255))
     due_date: Mapped[str | None] = mapped_column(String(100))
-    status: Mapped[TaskStatus] = mapped_column(SAEnum(TaskStatus), default=TaskStatus.pending)
+    status: Mapped[str] = mapped_column(String(50), default='pending')
     source: Mapped[str | None] = mapped_column(String(50))  # 'meeting', 'agent', 'manual', 'meeting_notes'
 
     meeting: Mapped['Meeting | None'] = relationship(back_populates='tasks')
@@ -133,7 +133,7 @@ class AgentRun(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     prompt: Mapped[str] = mapped_column(Text)
     final_response: Mapped[str | None] = mapped_column(Text)
-    status: Mapped[AgentRunStatus] = mapped_column(SAEnum(AgentRunStatus), default=AgentRunStatus.running)
+    status: Mapped[str] = mapped_column(String(50), default='running')
     model: Mapped[str | None] = mapped_column(String(100))
     error: Mapped[str | None] = mapped_column(Text)
 
