@@ -1,48 +1,62 @@
+import logging
 import uuid
-from fastapi import APIRouter, Depends, File, UploadFile, HTTPException
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-from app.core.auth import CurrentUser
+from supabase import create_client, Client
 from app.core.config import settings
-from app.core.database import get_db
-from app.core.rate_limit import enforce_rate_limit
-from app.models.models import Contact
-from app.schemas.contacts import ConfirmContactRequest
-from app.services.ai_service import extract_business_card
-from app.services.storage_service import upload_card_image, get_signed_url
-router = APIRouter(prefix='/contacts', tags=['contacts'])
 
-@router.post('/scan-card')
-async def scan_business_card(user: CurrentUser, file: UploadFile = File(...)):
-    await enforce_rate_limit(str(user.id), 'card-scan', 10)
-    allowed = {'image/jpeg','image/png','image/webp','image/heic'}
-    if file.content_type not in allowed: raise HTTPException(400, 'Unsupported image type')
-    data = await file.read(settings.MAX_CARD_BYTES + 1)
-    if len(data) > settings.MAX_CARD_BYTES: raise HTTPException(413, 'Image too large')
-    extracted = await extract_business_card(data, file.content_type)
-    path = await upload_card_image(data, str(user.id), file.content_type)
-    preview = await signed_url(settings.STORAGE_CARD_BUCKET, path)
-    return {'extracted':extracted,'image_path':path,'image_url':preview,'message':'Review the extracted info and confirm to save'}
+log = logging.getLogger('tiby')
+_client: Client | None = None
 
-@router.post('/confirm')
-async def confirm_contact(req: ConfirmContactRequest, user: CurrentUser, db: AsyncSession = Depends(get_db)):
-    final = {**req.extracted, **req.edits}
-    c = Contact(user_id=user.id, name=final.get('name'), email=final.get('email'), phone=final.get('phone'), company=final.get('company'), role=final.get('role'), website=final.get('website'), address=final.get('address'), raw_extraction=req.extracted, card_image_path=req.image_path)
-    db.add(c); await db.commit(); await db.refresh(c)
-    return {'id':str(c.id),'contact':await _serialize(c)}
 
-@router.get('/')
-async def list_contacts(user: CurrentUser, db: AsyncSession = Depends(get_db)):
-    q = await db.execute(select(Contact).where(Contact.user_id == user.id).order_by(Contact.created_at.desc()))
-    return [await _serialize(c) for c in q.scalars().all()]
+def _supabase() -> Client:
+    global _client
+    if _client is None:
+        _client = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_KEY)
+    return _client
 
-@router.get('/{contact_id}')
-async def get_contact(contact_id: uuid.UUID, user: CurrentUser, db: AsyncSession = Depends(get_db)):
-    q = await db.execute(select(Contact).where(Contact.id == contact_id, Contact.user_id == user.id))
-    c = q.scalar_one_or_none()
-    if not c: raise HTTPException(404, 'Contact not found')
-    return await _serialize(c)
 
-async def _serialize(c: Contact):
-    image_url = await signed_url(settings.STORAGE_CARD_BUCKET, c.card_image_path) if c.card_image_path else None
-    return {'id':str(c.id),'name':c.name,'email':c.email,'phone':c.phone,'company':c.company,'role':c.role,'website':c.website,'address':c.address,'card_image_url':image_url,'created_at':c.created_at.isoformat()}
+async def upload_card_image(image_bytes: bytes, user_id: str, mime_type: str = 'image/jpeg') -> str:
+    path = f'users/{user_id}/cards/{uuid.uuid4()}.jpg'
+    try:
+        sb = _supabase()
+        sb.storage.from_(settings.STORAGE_CARD_BUCKET).upload(
+            path,
+            image_bytes,
+            {'content-type': mime_type, 'upsert': 'false'},
+        )
+        return path
+    except Exception as e:
+        log.error('Storage upload failed: %s', e)
+        raise
+
+
+async def upload_audio(audio_bytes: bytes, user_id: str, meeting_id: str, mime_type: str = 'audio/webm') -> str:
+    ext = 'mp4' if 'mp4' in mime_type else 'webm'
+    path = f'users/{user_id}/meetings/{meeting_id}.{ext}'
+    try:
+        sb = _supabase()
+        sb.storage.from_(settings.STORAGE_AUDIO_BUCKET).upload(
+            path,
+            audio_bytes,
+            {'content-type': mime_type, 'upsert': 'true'},
+        )
+        return path
+    except Exception as e:
+        log.error('Audio upload failed: %s', e)
+        raise
+
+
+async def get_signed_url(bucket: str, path: str, expires_in: int = 300) -> str:
+    try:
+        sb = _supabase()
+        result = sb.storage.from_(bucket).create_signed_url(path, expires_in)
+        return result.get('signedURL') or result.get('signedUrl', '')
+    except Exception as e:
+        log.error('Signed URL failed: %s', e)
+        return ''
+
+
+async def delete_file(bucket: str, path: str) -> None:
+    try:
+        _supabase().storage.from_(bucket).remove([path])
+    except Exception as e:
+        log.warning('Storage delete failed: %s', e)
