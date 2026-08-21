@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.auth import CurrentUser
 from app.core.config import settings
 from app.core.database import get_db, _get_session_factory
-from app.models.models import Meeting, Task
+from app.models.models import Contact, Meeting, Task, User
 from app.services.storage_service import upload_meeting_audio, download_private
 
 log = logging.getLogger("tiby")
@@ -18,6 +18,29 @@ router = APIRouter(prefix="/meetings", tags=["meetings"])
 
 class StartMeetingRequest(BaseModel):
     title: str | None = Field(default=None, max_length=500)
+
+
+async def _resolve_assignee(owner_name: str, creator_user_id: uuid.UUID, db) -> uuid.UUID | None:
+    """Look up a contact by name, find their email, check if they have a Tiby account."""
+    if not owner_name or owner_name.lower() in ('me', 'tbd', ''):
+        return None
+    # Find contact with matching name
+    q = await db.execute(
+        select(Contact).where(
+            Contact.user_id == creator_user_id,
+            Contact.name.ilike(f'%{owner_name}%'),
+            Contact.email.isnot(None),
+        ).limit(1)
+    )
+    contact = q.scalar_one_or_none()
+    if not contact or not contact.email:
+        return None
+    # Check if that email is a registered Tiby user
+    uq = await db.execute(
+        select(User).where(User.email == contact.email.lower()).limit(1)
+    )
+    assignee = uq.scalar_one_or_none()
+    return assignee.id if assignee and assignee.id != creator_user_id else None
 
 
 @router.post("/start")
@@ -58,19 +81,24 @@ async def _process_meeting_bg(meeting_id: str, user_id: str):
             m.action_items = result['action_items']
             m.status = 'done'
 
+            creator_id = uuid.UUID(user_id)
+
             for item in m.action_items or []:
+                owner_name = item.get('owner') or ''
+                assigned_to = await _resolve_assignee(owner_name, creator_id, db)
                 db.add(Task(
-                    user_id=m.user_id,
+                    user_id=creator_id,
+                    assigned_to_user_id=assigned_to,
                     meeting_id=m.id,
                     title=str(item.get('task') or 'Unnamed task')[:500],
-                    owner=item.get('owner'),
+                    owner=owner_name or 'Me',
                     due_date=item.get('due'),
                     source='meeting',
                     status='pending',
                 ))
 
             await db.commit()
-            log.info("Meeting %s processed successfully", meeting_id)
+            log.info("Meeting %s processed, tasks created with cross-assignment", meeting_id)
 
         except Exception as exc:
             log.exception("Meeting processing failed: %s", meeting_id)
@@ -147,12 +175,16 @@ async def process_notes(
     db.add(m)
     await db.flush()
 
+    creator_id = user.id
     for item in m.action_items or []:
+        owner_name = item.get('owner') or ''
+        assigned_to = await _resolve_assignee(owner_name, creator_id, db)
         db.add(Task(
-            user_id=user.id,
+            user_id=creator_id,
+            assigned_to_user_id=assigned_to,
             meeting_id=m.id,
             title=str(item.get('task') or 'Unnamed task')[:500],
-            owner=item.get('owner'),
+            owner=owner_name or 'Me',
             due_date=item.get('due'),
             source='meeting_notes',
             status='pending',
@@ -206,7 +238,14 @@ async def get(meeting_id: uuid.UUID, user: CurrentUser, db: AsyncSession = Depen
     )
     d = _ser(m)
     d["tasks"] = [
-        {"id": str(t.id), "title": t.title, "owner": t.owner, "due_date": t.due_date, "status": t.status}
+        {
+            "id": str(t.id),
+            "title": t.title,
+            "owner": t.owner,
+            "due_date": t.due_date,
+            "status": t.status,
+            "assigned_to_user_id": str(t.assigned_to_user_id) if t.assigned_to_user_id else None,
+        }
         for t in tq.scalars().all()
     ]
     return d
