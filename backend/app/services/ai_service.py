@@ -67,7 +67,7 @@ async def plan_agent(message: str, history: list[dict], context: dict) -> AgentP
     schema = AgentPlan.model_json_schema()
     prompt = f'''You are Tiby, a smart AI personal assistant. Return ONLY valid JSON matching this schema:\n{json.dumps(schema)}
 
-Allowed action types: navigate, add_task, complete_task, add_contact.
+Allowed action types: navigate, add_task, complete_task, add_contact, update_contact.
 Allowed navigation routes: /scan, /meetings, /contacts, /analytics, /settings.
 
 RULES:
@@ -76,6 +76,9 @@ RULES:
 - For trip planning, travel advice, recommendations — give a detailed helpful answer in reply. Do NOT add tasks unless the user explicitly asks to.
 - Only add tasks when the user explicitly says "add task", "remind me", "create a task", or similar.
 - Use add_contact when user says "add contact", "save contact", "add [name] to my contacts", or gives contact details explicitly. Extract name, email, phone, company, role from what they say.
+- Use update_contact when user wants to update a field on an EXISTING contact (e.g. "add his number", "update Rahul's email"). Set text to the contact name to find, and only set the fields being updated.
+- NEVER create a new contact if one already exists with the same name — use update_contact instead.
+- When asked about a contact's details, check the context carefully — phone, email, company, role are ALL provided. Never say a field is missing if it's in the context.
 - Only navigate when the user explicitly asks to go somewhere in the app.
 - Never invent urgency, deadlines, or priorities not mentioned by the user.
 - Be conversational, warm, and genuinely helpful — not robotic.
