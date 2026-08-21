@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.auth import CurrentUser
 from app.core.config import settings
@@ -20,19 +20,30 @@ async def summary(user: CurrentUser, db: AsyncSession = Depends(get_db)):
         select(func.count()).select_from(Meeting)
         .where(Meeting.user_id == user.id, Meeting.status == 'done')
     )
-    pending = await db.scalar(
+    # Tasks I created
+    my_pending = await db.scalar(
         select(func.count()).select_from(Task)
         .where(Task.user_id == user.id, Task.status == 'pending')
     )
-    done = await db.scalar(
+    my_done = await db.scalar(
         select(func.count()).select_from(Task)
         .where(Task.user_id == user.id, Task.status == 'done')
+    )
+    # Tasks assigned to me by others
+    assigned_pending = await db.scalar(
+        select(func.count()).select_from(Task)
+        .where(
+            Task.assigned_to_user_id == user.id,
+            Task.user_id != user.id,
+            Task.status == 'pending',
+        )
     )
     return {
         'contacts': contacts or 0,
         'meetings': meetings or 0,
-        'tasks_pending': pending or 0,
-        'tasks_done': done or 0,
+        'tasks_pending': (my_pending or 0) + (assigned_pending or 0),
+        'tasks_done': my_done or 0,
+        'tasks_assigned_to_me': assigned_pending or 0,
     }
 
 
@@ -41,7 +52,10 @@ async def prioritize(user: CurrentUser, db: AsyncSession = Depends(get_db)):
     await enforce_rate_limit(str(user.id), 'ai-prioritize', settings.AI_RATE_LIMIT_PER_MINUTE)
     q = await db.execute(
         select(Task)
-        .where(Task.user_id == user.id, Task.status == 'pending')
+        .where(
+            or_(Task.user_id == user.id, Task.assigned_to_user_id == user.id),
+            Task.status == 'pending',
+        )
         .order_by(Task.created_at.asc())
         .limit(100)
     )
@@ -60,7 +74,7 @@ async def eod(user: CurrentUser, db: AsyncSession = Depends(get_db)):
     await enforce_rate_limit(str(user.id), 'ai-eod', settings.AI_RATE_LIMIT_PER_MINUTE)
     q = await db.execute(
         select(Task)
-        .where(Task.user_id == user.id)
+        .where(or_(Task.user_id == user.id, Task.assigned_to_user_id == user.id))
         .order_by(Task.created_at.desc())
         .limit(100)
     )
