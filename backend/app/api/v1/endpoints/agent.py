@@ -6,11 +6,31 @@ from app.core.auth import CurrentUser
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.rate_limit import enforce_rate_limit
-from app.models.models import AgentRun, AgentRunStatus, AgentStep, Contact, Task
+from app.models.models import AgentRun, AgentRunStatus, AgentStep, Contact, Task, User
 from app.schemas.agent import AgentChatRequest, AgentChatResponse
 from app.services.ai_service import plan_agent
 
 router = APIRouter(prefix='/agent', tags=['agent'])
+
+
+async def _resolve_assignee(owner_name: str, creator_user_id, all_contacts: list, db) -> str | None:
+    """Match owner name to a contact email, then to a Tiby user ID."""
+    if not owner_name or owner_name.lower() in ('me', 'tbd', ''):
+        return None
+    needle = owner_name.lower()
+    match = next(
+        (c for c in all_contacts if needle in (c.get('name') or '').lower()),
+        None,
+    )
+    if not match or not match.get('email'):
+        return None
+    uq = await db.execute(
+        select(User).where(User.email == match['email'].lower()).limit(1)
+    )
+    assignee = uq.scalar_one_or_none()
+    if assignee and str(assignee.id) != str(creator_user_id):
+        return str(assignee.id)
+    return None
 
 
 @router.post('/chat', response_model=AgentChatResponse)
@@ -29,34 +49,25 @@ async def chat(req: AgentChatRequest, user: CurrentUser, db: AsyncSession = Depe
 
     try:
         contacts_result = await db.execute(
-            select(Contact)
-            .where(Contact.user_id == user.id)
-            .order_by(Contact.created_at.desc())
-            .limit(50)
+            select(Contact).where(Contact.user_id == user.id)
+            .order_by(Contact.created_at.desc()).limit(50)
         )
-        all_contacts = contacts_result.scalars().all()
+        all_contacts_orm = contacts_result.scalars().all()
+        all_contacts = [
+            {'id': str(c.id), 'name': c.name, 'email': c.email,
+             'phone': c.phone, 'company': c.company, 'role': c.role}
+            for c in all_contacts_orm
+        ]
 
         tasks_result = await db.execute(
-            select(Task)
-            .where(Task.user_id == user.id, Task.status == 'pending')
-            .order_by(Task.created_at.desc())
-            .limit(20)
+            select(Task).where(Task.user_id == user.id, Task.status == 'pending')
+            .order_by(Task.created_at.desc()).limit(20)
         )
 
         context = {
             'name': user.name,
             'email': user.email,
-            'recent_contacts': [
-                {
-                    'id': str(c.id),
-                    'name': c.name,
-                    'email': c.email,
-                    'phone': c.phone,
-                    'company': c.company,
-                    'role': c.role,
-                }
-                for c in all_contacts
-            ],
+            'recent_contacts': all_contacts,
             'open_tasks': [
                 {'id': str(t.id), 'title': t.title, 'due': t.due_date, 'owner': t.owner}
                 for t in tasks_result.scalars().all()
@@ -75,22 +86,29 @@ async def chat(req: AgentChatRequest, user: CurrentUser, db: AsyncSession = Depe
                 result = {'ok': True, 'route': action.route}
 
             elif action.type == 'add_task' and action.title:
+                owner_name = action.owner or 'Me'
+                assigned_to = await _resolve_assignee(owner_name, user.id, all_contacts, db)
                 task = Task(
                     user_id=user.id,
+                    assigned_to_user_id=assigned_to,
                     title=action.title[:500],
                     due_date=action.due,
-                    owner=action.owner or 'Me',
+                    owner=owner_name,
                     source='agent',
                     status='pending',
                 )
                 db.add(task)
                 await db.flush()
-                result = {'ok': True, 'task_id': str(task.id), 'title': task.title}
+                result = {
+                    'ok': True,
+                    'task_id': str(task.id),
+                    'title': task.title,
+                    'assigned_to': assigned_to,
+                }
 
             elif action.type == 'complete_task' and action.text:
                 q = await db.execute(
-                    select(Task)
-                    .where(Task.user_id == user.id, Task.status == 'pending')
+                    select(Task).where(Task.user_id == user.id, Task.status == 'pending')
                     .order_by(Task.created_at.desc())
                 )
                 candidates = q.scalars().all()
@@ -106,21 +124,20 @@ async def chat(req: AgentChatRequest, user: CurrentUser, db: AsyncSession = Depe
                     result = {'ok': False, 'reason': 'No matching open task found'}
 
             elif action.type == 'add_contact' and action.name:
-                # Check for existing contact with same name first
+                from app.models.models import Contact as ContactModel
                 needle = action.name.lower()
                 existing = next(
-                    (c for c in all_contacts if (c.name or '').lower() == needle),
+                    (c for c in all_contacts_orm if (c.name or '').lower() == needle),
                     None,
                 )
                 if existing:
-                    # Update instead of creating duplicate
                     if action.phone: existing.phone = action.phone
                     if action.email: existing.email = action.email
                     if action.company: existing.company = action.company
                     if action.role: existing.role = action.role
                     result = {'ok': True, 'contact_id': str(existing.id), 'name': existing.name, 'action': 'updated'}
                 else:
-                    contact = Contact(
+                    contact = ContactModel(
                         user_id=user.id,
                         name=action.name,
                         email=action.email,
@@ -134,16 +151,16 @@ async def chat(req: AgentChatRequest, user: CurrentUser, db: AsyncSession = Depe
 
             elif action.type == 'update_contact' and action.text:
                 needle = action.text.lower()
-                match = next(
-                    (c for c in all_contacts if needle in (c.name or '').lower() or (c.name or '').lower() in needle),
+                match_c = next(
+                    (c for c in all_contacts_orm if needle in (c.name or '').lower() or (c.name or '').lower() in needle),
                     None,
                 )
-                if match:
-                    if action.phone: match.phone = action.phone
-                    if action.email: match.email = action.email
-                    if action.company: match.company = action.company
-                    if action.role: match.role = action.role
-                    result = {'ok': True, 'contact_id': str(match.id), 'name': match.name}
+                if match_c:
+                    if action.phone: match_c.phone = action.phone
+                    if action.email: match_c.email = action.email
+                    if action.company: match_c.company = action.company
+                    if action.role: match_c.role = action.role
+                    result = {'ok': True, 'contact_id': str(match_c.id), 'name': match_c.name}
                 else:
                     result = {'ok': False, 'reason': 'No matching contact found'}
 
