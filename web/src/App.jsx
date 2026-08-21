@@ -143,10 +143,10 @@ export default function App() {
   }, [])
 
   if (!ready) return (
-    <div style={{ height: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f9f9f8' }}>
-      <div style={{ textAlign: 'center' }}>
-        <div style={{ width: 44, height: 44, borderRadius: 12, background: '#1a1a1a', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 19, fontWeight: 600, color: '#fff', margin: '0 auto 12px' }}>T</div>
-        <div style={{ fontSize: 13, color: '#9ca3af' }}>Loading…</div>
+    <div style={{ height:'100dvh', display:'flex', alignItems:'center', justifyContent:'center', background:'#f9f9f8' }}>
+      <div style={{ textAlign:'center' }}>
+        <div style={{ width:44, height:44, borderRadius:12, background:'#1a1a1a', display:'flex', alignItems:'center', justifyContent:'center', fontSize:19, fontWeight:600, color:'#fff', margin:'0 auto 12px' }}>T</div>
+        <div style={{ fontSize:13, color:'#9ca3af' }}>Loading…</div>
       </div>
     </div>
   )
