@@ -31,6 +31,7 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
 )
 
+
 @app.middleware("http")
 async def request_context(request: Request, call_next):
     rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
@@ -54,6 +55,45 @@ async def request_context(request: Request, call_next):
     )
     return response
 
+
+@app.on_event("startup")
+async def startup():
+    """Create all tables and enum types on startup if they don't exist."""
+    try:
+        from sqlalchemy import text
+        from app.core.database import _get_engine
+        from app.models.models import Base
+
+        engine = _get_engine()
+
+        async with engine.begin() as conn:
+            # Create enum types manually first (PostgreSQL requires this before CREATE TABLE)
+            await conn.execute(text("""
+                DO $$ BEGIN
+                    CREATE TYPE taskstatus AS ENUM ('pending', 'done', 'cancelled');
+                EXCEPTION WHEN duplicate_object THEN NULL;
+                END $$;
+            """))
+            await conn.execute(text("""
+                DO $$ BEGIN
+                    CREATE TYPE meetingstatus AS ENUM ('recording', 'processing', 'done', 'failed');
+                EXCEPTION WHEN duplicate_object THEN NULL;
+                END $$;
+            """))
+            await conn.execute(text("""
+                DO $$ BEGIN
+                    CREATE TYPE agentrunstatus AS ENUM ('running', 'completed', 'failed');
+                EXCEPTION WHEN duplicate_object THEN NULL;
+                END $$;
+            """))
+            # Now create all tables
+            await conn.run_sync(Base.metadata.create_all)
+
+        log.info("Database tables and enum types ready.")
+    except Exception as e:
+        log.error("Startup DB init failed: %s", e)
+
+
 API_PREFIX = "/api/v1"
 
 for router in (
@@ -67,9 +107,11 @@ for router in (
 ):
     app.include_router(router, prefix=API_PREFIX)
 
+
 @app.get("/healthz")
 async def health():
     return {"status": "ok", "app": "Tiby API", "version": "2.0.0"}
+
 
 @app.get("/")
 async def root():
