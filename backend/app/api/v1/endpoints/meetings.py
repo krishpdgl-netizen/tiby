@@ -30,16 +30,13 @@ async def start(req: StartMeetingRequest, user: CurrentUser, db: AsyncSession = 
 
 
 async def _process_meeting_bg(meeting_id: str, user_id: str):
-    """Run STT + MOM generation in the background using FastAPI BackgroundTasks."""
-    from app.services.stt_service import transcribe_audio
-    from app.services.ai_service import generate_mom
-
+    """Download audio, send to Gemini for transcription + MOM in one call."""
     async with _get_session_factory()() as db:
         try:
             q = await db.execute(
                 select(Meeting).where(
                     Meeting.id == uuid.UUID(meeting_id),
-                    Meeting.user_id == uuid.UUID(user_id)
+                    Meeting.user_id == uuid.UUID(user_id),
                 )
             )
             m = q.scalar_one_or_none()
@@ -53,29 +50,28 @@ async def _process_meeting_bg(meeting_id: str, user_id: str):
             # Download audio from Supabase Storage
             audio = await download_private(settings.STORAGE_AUDIO_BUCKET, m.audio_path)
 
-            # Transcribe
-            stt = await transcribe_audio(audio, is_meeting=True)
-            m.transcript = stt["transcript"]
-            m.duration_seconds = int(stt.get("duration", 0))
-            await db.commit()
+            # Detect mime type from path
+            mime_type = 'audio/mp4' if m.audio_path.endswith('.mp4') else 'audio/webm'
 
-            # Generate MOM
-            mom = await generate_mom(m.transcript, m.title)
-            m.summary = mom["summary"]
-            m.mom = mom["mom_markdown"]
-            m.decisions = mom["decisions"]
-            m.action_items = mom["action_items"]
+            # One Gemini call — transcription + MOM together
+            from app.services.ai_service import transcribe_and_generate_mom
+            result = await transcribe_and_generate_mom(audio, mime_type, m.title)
+
+            m.transcript = result['transcript']
+            m.summary = result['summary']
+            m.mom = result['mom_markdown']
+            m.decisions = result['decisions']
+            m.action_items = result['action_items']
             m.status = MeetingStatus.done
 
-            # Create tasks from action items
             for item in m.action_items or []:
                 db.add(Task(
                     user_id=m.user_id,
                     meeting_id=m.id,
-                    title=str(item.get("task") or "Unnamed task")[:500],
-                    owner=item.get("owner"),
-                    due_date=item.get("due"),
-                    source="meeting",
+                    title=str(item.get('task') or 'Unnamed task')[:500],
+                    owner=item.get('owner'),
+                    due_date=item.get('due'),
+                    source='meeting',
                 ))
 
             await db.commit()
@@ -144,17 +140,27 @@ async def process_notes(
         raise HTTPException(413, "Notes image too large (max 10 MB)")
 
     transcript = await extract_handwritten_notes(data, ct or "image/jpeg")
-    mom = await generate_mom(transcript, title)
+
+    # Reuse Gemini MOM generation from transcript text
+    from app.services.ai_service import transcribe_and_generate_mom
+    result = await transcribe_and_generate_mom(
+        b'',  # no audio for notes
+        'text/plain',
+        title,
+    )
+
+    # For notes we already have the transcript — generate MOM from text directly
+    prompt_result = await _mom_from_text(transcript, title)
 
     m = Meeting(
         user_id=user.id,
         title=title or "Meeting",
         status=MeetingStatus.done,
         transcript=transcript,
-        summary=mom["summary"],
-        mom=mom["mom_markdown"],
-        decisions=mom["decisions"],
-        action_items=mom["action_items"],
+        summary=prompt_result['summary'],
+        mom=prompt_result['mom_markdown'],
+        decisions=prompt_result['decisions'],
+        action_items=prompt_result['action_items'],
     )
     db.add(m)
     await db.flush()
@@ -163,15 +169,37 @@ async def process_notes(
         db.add(Task(
             user_id=user.id,
             meeting_id=m.id,
-            title=str(item.get("task") or "Unnamed task")[:500],
-            owner=item.get("owner"),
-            due_date=item.get("due"),
-            source="meeting_notes",
+            title=str(item.get('task') or 'Unnamed task')[:500],
+            owner=item.get('owner'),
+            due_date=item.get('due'),
+            source='meeting_notes',
         ))
 
     await db.commit()
     await db.refresh(m)
     return _ser(m)
+
+
+async def _mom_from_text(transcript: str, title: str) -> dict:
+    """Generate MOM from a text transcript (used for handwritten notes)."""
+    from app.services.ai_service import _generate, _extract_json
+    if not transcript or not transcript.strip():
+        return {'summary': 'No content found.', 'mom_markdown': '', 'decisions': [], 'action_items': []}
+    prompt = f'''Analyze this meeting transcript and return ONLY valid JSON with keys: summary (string), mom_markdown (string), decisions (array of strings), action_items (array of objects with task, owner, due).
+Title: {title}
+Transcript:
+{transcript}'''
+    try:
+        raw = await _generate(prompt, temperature=0.1)
+        data = _extract_json(raw)
+    except Exception:
+        return {'summary': transcript[:300], 'mom_markdown': transcript, 'decisions': [], 'action_items': []}
+    return {
+        'summary': str(data.get('summary') or ''),
+        'mom_markdown': str(data.get('mom_markdown') or ''),
+        'decisions': data.get('decisions') if isinstance(data.get('decisions'), list) else [],
+        'action_items': data.get('action_items') if isinstance(data.get('action_items'), list) else [],
+    }
 
 
 @router.get("/")
