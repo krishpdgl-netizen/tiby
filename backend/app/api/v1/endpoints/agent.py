@@ -6,7 +6,7 @@ from app.core.auth import CurrentUser
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.rate_limit import enforce_rate_limit
-from app.models.models import AgentRun, AgentRunStatus, AgentStep, Contact, Task, User
+from app.models.models import AgentRun, AgentStep, Contact, Task, User
 from app.schemas.agent import AgentChatRequest, AgentChatResponse
 from app.services.ai_service import plan_agent
 
@@ -14,18 +14,19 @@ router = APIRouter(prefix='/agent', tags=['agent'])
 
 
 async def _resolve_assignee(owner_name: str, creator_user_id, all_contacts: list, db) -> str | None:
-    """Match owner name to a contact email, then to a Tiby user ID."""
     if not owner_name or owner_name.lower() in ('me', 'tbd', ''):
         return None
     needle = owner_name.lower()
-    match = next(
-        (c for c in all_contacts if needle in (c.get('name') or '').lower()),
-        None,
-    )
-    if not match or not match.get('email'):
+    # Exact name match only — partial match risks wrong assignment
+    matches = [c for c in all_contacts if (c.get('name') or '').lower() == needle]
+    # If multiple contacts share the same name — skip (ambiguous)
+    if len(matches) != 1:
+        return None
+    contact = matches[0]
+    if not contact.get('email'):
         return None
     uq = await db.execute(
-        select(User).where(User.email == match['email'].lower()).limit(1)
+        select(User).where(User.email == contact['email'].lower()).limit(1)
     )
     assignee = uq.scalar_one_or_none()
     if assignee and str(assignee.id) != str(creator_user_id):
@@ -40,7 +41,7 @@ async def chat(req: AgentChatRequest, user: CurrentUser, db: AsyncSession = Depe
     run = AgentRun(
         user_id=user.id,
         prompt=req.message,
-        status=AgentRunStatus.running,
+        status='running',
         model=settings.GEMINI_MODEL,
     )
     db.add(run)
@@ -99,12 +100,7 @@ async def chat(req: AgentChatRequest, user: CurrentUser, db: AsyncSession = Depe
                 )
                 db.add(task)
                 await db.flush()
-                result = {
-                    'ok': True,
-                    'task_id': str(task.id),
-                    'title': task.title,
-                    'assigned_to': assigned_to,
-                }
+                result = {'ok': True, 'task_id': str(task.id), 'title': task.title, 'assigned_to': assigned_to}
 
             elif action.type == 'complete_task' and action.text:
                 q = await db.execute(
@@ -124,7 +120,6 @@ async def chat(req: AgentChatRequest, user: CurrentUser, db: AsyncSession = Depe
                     result = {'ok': False, 'reason': 'No matching open task found'}
 
             elif action.type == 'add_contact' and action.name:
-                from app.models.models import Contact as ContactModel
                 needle = action.name.lower()
                 existing = next(
                     (c for c in all_contacts_orm if (c.name or '').lower() == needle),
@@ -137,7 +132,7 @@ async def chat(req: AgentChatRequest, user: CurrentUser, db: AsyncSession = Depe
                     if action.role: existing.role = action.role
                     result = {'ok': True, 'contact_id': str(existing.id), 'name': existing.name, 'action': 'updated'}
                 else:
-                    contact = ContactModel(
+                    contact = Contact(
                         user_id=user.id,
                         name=action.name,
                         email=action.email,
@@ -175,7 +170,7 @@ async def chat(req: AgentChatRequest, user: CurrentUser, db: AsyncSession = Depe
             outputs.append({'type': action.type, **result})
             step_no += 1
 
-        run.status = AgentRunStatus.completed
+        run.status = 'completed'
         run.final_response = plan.reply
         run.finished_at = datetime.now(timezone.utc)
         await db.commit()
@@ -185,7 +180,7 @@ async def chat(req: AgentChatRequest, user: CurrentUser, db: AsyncSession = Depe
     except Exception as exc:
         await db.rollback()
         try:
-            run.status = AgentRunStatus.failed
+            run.status = 'failed'
             run.error = str(exc)[:4000]
             run.finished_at = datetime.now(timezone.utc)
             await db.commit()
