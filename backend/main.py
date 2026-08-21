@@ -5,7 +5,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.logging import configure_logging
-from app.api.v1.endpoints import agent, analytics, contacts, emails, meetings, tasks, voice
+from app.api.v1.endpoints import agent, analytics, contacts, emails, meetings, tasks, voice, profile
 
 configure_logging()
 log = logging.getLogger("tiby")
@@ -18,7 +18,6 @@ app = FastAPI(
     redoc_url=None,
 )
 
-# CORS must be FIRST middleware
 _origins = settings.allowed_origins_list
 if "https://tiby.vercel.app" not in _origins:
     _origins = ["https://tiby.vercel.app"] + _origins
@@ -58,16 +57,12 @@ async def request_context(request: Request, call_next):
 
 @app.on_event("startup")
 async def startup():
-    """Create all tables and enum types on startup if they don't exist."""
     try:
         from sqlalchemy import text
         from app.core.database import _get_engine
         from app.models.models import Base
-
         engine = _get_engine()
-
         async with engine.begin() as conn:
-            # Create enum types manually first (PostgreSQL requires this before CREATE TABLE)
             await conn.execute(text("""
                 DO $$ BEGIN
                     CREATE TYPE taskstatus AS ENUM ('pending', 'done', 'cancelled');
@@ -86,9 +81,7 @@ async def startup():
                 EXCEPTION WHEN duplicate_object THEN NULL;
                 END $$;
             """))
-            # Now create all tables
             await conn.run_sync(Base.metadata.create_all)
-
         log.info("Database tables and enum types ready.")
     except Exception as e:
         log.error("Startup DB init failed: %s", e)
@@ -104,6 +97,7 @@ for router in (
     meetings.router,
     tasks.router,
     voice.router,
+    profile.router,
 ):
     app.include_router(router, prefix=API_PREFIX)
 
