@@ -2,7 +2,7 @@ import asyncio
 import base64
 import json
 import re
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 import google.generativeai as genai
 from app.core.config import settings
 from app.schemas.agent import AgentPlan
@@ -50,11 +50,80 @@ async def draft_email(contact: dict, user_instruction: str, user_name: str | Non
     return {'subject': subject, 'body': body}
 
 
+async def transcribe_and_generate_mom(audio_bytes: bytes, mime_type: str, meeting_title: str | None = None) -> dict:
+    """Send audio directly to Gemini — transcribes + generates MOM in one call."""
+    if not audio_bytes:
+        return {
+            'transcript': '',
+            'summary': 'No audio provided.',
+            'mom_markdown': '',
+            'decisions': [],
+            'action_items': [],
+        }
+
+    prompt = f'''You are analyzing a meeting recording.
+Title: {meeting_title or 'Meeting'}
+
+Do two things:
+1. Transcribe the audio faithfully
+2. Analyze the transcript and generate meeting minutes
+
+Return ONLY valid JSON with these keys:
+- transcript (string): full transcription of the audio
+- summary (string): 2-3 sentence summary of the meeting
+- mom_markdown (string): full minutes of meeting in markdown format
+- decisions (array of strings): key decisions made, empty array if none
+- action_items (array of objects): each with task, owner, due fields. Empty array if none.
+
+If audio is too short or unclear, still return valid JSON with whatever you could capture.
+Never invent content that was not said.'''
+
+    audio_part = {
+        'inline_data': {
+            'mime_type': mime_type,
+            'data': base64.b64encode(audio_bytes).decode()
+        }
+    }
+
+    try:
+        model = genai.GenerativeModel(settings.GEMINI_MODEL)
+        response = await asyncio.to_thread(
+            model.generate_content,
+            [prompt, audio_part],
+            generation_config={'temperature': 0.1, 'max_output_tokens': 4000},
+        )
+        raw = getattr(response, 'text', '') or ''
+        if not raw.strip():
+            raise ValueError('Empty response from Gemini')
+        data = _extract_json(raw)
+    except Exception as exc:
+        return {
+            'transcript': '',
+            'summary': f'Could not process audio: {str(exc)[:200]}',
+            'mom_markdown': 'Audio processing failed.',
+            'decisions': [],
+            'action_items': [],
+        }
+
+    return {
+        'transcript': str(data.get('transcript') or ''),
+        'summary': str(data.get('summary') or ''),
+        'mom_markdown': str(data.get('mom_markdown') or ''),
+        'decisions': data.get('decisions') if isinstance(data.get('decisions'), list) else [],
+        'action_items': data.get('action_items') if isinstance(data.get('action_items'), list) else [],
+    }
+
+
 async def generate_mom(transcript: str, meeting_title: str | None = None) -> dict:
+    if not transcript or not transcript.strip():
+        return {'summary': 'No speech detected.', 'mom_markdown': '', 'decisions': [], 'action_items': []}
     if len(transcript) > 180_000:
         transcript = transcript[:180_000]
     prompt = f'''Analyze this meeting transcript and return ONLY JSON with keys: summary (string), mom_markdown (string), decisions (array of strings), action_items (array of objects with task, owner, due). Never invent decisions or action items.\nTitle: {meeting_title or 'Meeting'}\nTranscript:\n{transcript}'''
-    data = _extract_json(await _generate(prompt, temperature=0.1))
+    try:
+        data = _extract_json(await _generate(prompt, temperature=0.1))
+    except Exception:
+        return {'summary': transcript[:300], 'mom_markdown': transcript, 'decisions': [], 'action_items': []}
     return {
         'summary': str(data.get('summary') or ''),
         'mom_markdown': str(data.get('mom_markdown') or ''),
@@ -96,6 +165,7 @@ User message: {message}'''
             action.route = None
     return plan
 
+
 async def prioritize_tasks(tasks: list[dict]) -> list[dict]:
     prompt = f'''Prioritize these open tasks. Return ONLY a JSON array with one object per input task, in the SAME ORDER. Each object must have priority (high, medium, or low) and reason (max 12 words).
 STRICT RULES:
@@ -106,21 +176,26 @@ STRICT RULES:
 Tasks: {json.dumps(tasks, default=str)}'''
     raw = await _generate(prompt, temperature=0.1)
     cleaned = re.sub(r'^```(?:json)?|```$', '', raw.strip(), flags=re.MULTILINE).strip()
-    first,last=cleaned.find('['),cleaned.rfind(']')
-    data=json.loads(cleaned[first:last+1]) if first>=0 and last>first else []
-    out=[]
-    for i,_ in enumerate(tasks):
-        p=data[i] if i < len(data) and isinstance(data[i],dict) else {}
-        priority=p.get('priority') if p.get('priority') in {'high','medium','low'} else 'medium'
-        out.append({'priority':priority,'reason':str(p.get('reason') or '')[:160]})
+    first, last = cleaned.find('['), cleaned.rfind(']')
+    data = json.loads(cleaned[first:last + 1]) if first >= 0 and last > first else []
+    out = []
+    for i, _ in enumerate(tasks):
+        p = data[i] if i < len(data) and isinstance(data[i], dict) else {}
+        priority = p.get('priority') if p.get('priority') in {'high', 'medium', 'low'} else 'medium'
+        out.append({'priority': priority, 'reason': str(p.get('reason') or '')[:160]})
     return out
+
 
 async def generate_eod_summary(tasks: list[dict]) -> dict:
     prompt = f'''Create an end-of-day review from the user's tasks. Return ONLY JSON with today_summary and tomorrow_plan. Be concise, factual, and do not claim work happened unless a task is marked done. Tasks: {json.dumps(tasks, default=str)}'''
-    data=_extract_json(await _generate(prompt, temperature=0.2))
-    return {'today_summary':str(data.get('today_summary') or ''),'tomorrow_plan':str(data.get('tomorrow_plan') or '')}
+    data = _extract_json(await _generate(prompt, temperature=0.2))
+    return {
+        'today_summary': str(data.get('today_summary') or ''),
+        'tomorrow_plan': str(data.get('tomorrow_plan') or ''),
+    }
+
 
 async def extract_handwritten_notes(image_bytes: bytes, mime_type='image/jpeg') -> str:
-    image_part={'inline_data':{'mime_type':mime_type,'data':base64.b64encode(image_bytes).decode()}}
-    prompt='Transcribe these handwritten or printed meeting notes faithfully. Return plain text only. Do not add information that is not visible.'
-    return (await _generate([prompt,image_part],settings.GEMINI_VISION_MODEL,0.0)).strip()
+    image_part = {'inline_data': {'mime_type': mime_type, 'data': base64.b64encode(image_bytes).decode()}}
+    prompt = 'Transcribe these handwritten or printed meeting notes faithfully. Return plain text only. Do not add information that is not visible.'
+    return (await _generate([prompt, image_part], settings.GEMINI_VISION_MODEL, 0.0)).strip()
