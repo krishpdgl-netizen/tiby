@@ -8,7 +8,6 @@ export default function LoginPage() {
   const [loading, setLoading]   = useState(false)
   const [error, setError]       = useState(null)
   const [isSignUp, setIsSignUp] = useState(false)
-  const [sent, setSent]         = useState(false)
 
   async function handleGoogle() {
     setLoading(true); setError(null)
@@ -25,13 +24,18 @@ export default function LoginPage() {
     setLoading(true); setError(null)
     try {
       if (isSignUp) {
-        const { error } = await supabase.auth.signUp({
+        // Sign up without email confirmation
+        const { error: signUpError } = await supabase.auth.signUp({
           email: email.trim(),
           password: password.trim(),
-          options: { emailRedirectTo: window.location.origin },
         })
-        if (error) throw error
-        setSent(true)
+        if (signUpError) throw signUpError
+        // Immediately sign in — no email confirmation step
+        const { error: signInError } = await supabase.auth.signInWithPassword({
+          email: email.trim(),
+          password: password.trim(),
+        })
+        if (signInError) throw signInError
       } else {
         const { error } = await supabase.auth.signInWithPassword({
           email: email.trim(),
@@ -71,17 +75,7 @@ export default function LoginPage() {
           ))}
         </div>
 
-        {sent ? (
-          <div style={{ textAlign: 'center', padding: '20px 0' }}>
-            <div style={{ fontSize: 36, marginBottom: 12 }}>📬</div>
-            <div style={{ fontSize: 15, fontWeight: 600, color: '#1a1a1a', marginBottom: 6 }}>Check your email</div>
-            <div style={{ fontSize: 13.5, color: '#6b7280' }}>Confirmation sent to <strong>{email}</strong></div>
-            <button onClick={() => { setSent(false); setIsSignUp(false) }}
-              style={{ marginTop: 16, fontSize: 13, color: '#6b7280', background: 'none', border: 'none', cursor: 'pointer' }}>
-              Back to sign in
-            </button>
-          </div>
-        ) : mode === 'choose' ? (
+        {mode === 'choose' ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <button onClick={handleGoogle} disabled={loading}
               style={{ width: '100%', padding: '12px 14px', border: '1px solid #e5e5e4', borderRadius: 11, background: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10, fontSize: 14, fontWeight: 600, color: '#1a1a1a', opacity: loading ? .6 : 1, fontFamily: 'inherit' }}>
@@ -105,16 +99,16 @@ export default function LoginPage() {
           <form onSubmit={handleEmailPassword} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <input className="t-input" type="email" placeholder="your@email.com"
               value={email} onChange={e => setEmail(e.target.value)} autoFocus required />
-            <input className="t-input" type="password" placeholder="Password"
+            <input className="t-input" type="password" placeholder="Password (min 6 characters)"
               value={password} onChange={e => setPassword(e.target.value)} required />
             <button type="submit" className="t-btn t-btn-primary" disabled={loading || !email.trim() || !password.trim()}>
               {loading ? (isSignUp ? 'Creating account…' : 'Signing in…') : (isSignUp ? 'Create account' : 'Sign in')}
             </button>
-            <button type="button" onClick={() => setIsSignUp(s => !s)}
+            <button type="button" onClick={() => { setIsSignUp(s => !s); setError(null) }}
               style={{ background: 'none', border: 'none', color: '#6b7280', fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' }}>
               {isSignUp ? 'Already have an account? Sign in' : "Don't have an account? Sign up"}
             </button>
-            <button type="button" onClick={() => setMode('choose')}
+            <button type="button" onClick={() => { setMode('choose'); setError(null) }}
               style={{ background: 'none', border: 'none', color: '#9ca3af', fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' }}>
               ← Back
             </button>
