@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.auth import CurrentUser
 from app.core.config import settings
@@ -35,7 +35,6 @@ async def chat(req: AgentChatRequest, user: CurrentUser, db: AsyncSession = Depe
             .limit(10)
         )
 
-        # Use string literal for status to avoid enum cast issue
         tasks_result = await db.execute(
             select(Task)
             .where(Task.user_id == user.id, Task.status == 'pending')
@@ -74,6 +73,7 @@ async def chat(req: AgentChatRequest, user: CurrentUser, db: AsyncSession = Depe
                     due_date=action.due,
                     owner=action.owner or 'Me',
                     source='agent',
+                    status='pending',
                 )
                 db.add(task)
                 await db.flush()
