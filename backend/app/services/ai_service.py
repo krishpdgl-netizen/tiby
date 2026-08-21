@@ -50,37 +50,54 @@ async def draft_email(contact: dict, user_instruction: str, user_name: str | Non
     return {'subject': subject, 'body': body}
 
 
-async def generate_mom(transcript: str, meeting_title: str | None = None) -> dict:
-    if not transcript or not transcript.strip():
-        return {
-            'summary': 'No speech detected in the recording.',
-            'mom_markdown': 'No content to summarize.',
-            'decisions': [],
-            'action_items': [],
-        }
-
-    if len(transcript) > 180_000:
-        transcript = transcript[:180_000]
-
-    prompt = f'''Analyze this meeting transcript and return ONLY valid JSON with keys: summary (string), mom_markdown (string), decisions (array of strings), action_items (array of objects with task, owner, due). Never invent decisions or action items. If the transcript is too short or unclear, return your best effort.
+async def transcribe_and_generate_mom(audio_bytes: bytes, mime_type: str, meeting_title: str | None = None) -> dict:
+    """Send audio directly to Gemini — transcribes + generates MOM in one call. No Deepgram needed."""
+    prompt = f'''You are analyzing a meeting recording.
 Title: {meeting_title or 'Meeting'}
-Transcript:
-{transcript}'''
+
+Do two things:
+1. Transcribe the audio faithfully
+2. Analyze the transcript and generate meeting minutes
+
+Return ONLY valid JSON with these keys:
+- transcript (string): full transcription of the audio
+- summary (string): 2-3 sentence summary of the meeting
+- mom_markdown (string): full minutes of meeting in markdown format
+- decisions (array of strings): key decisions made, empty array if none
+- action_items (array of objects): each with task, owner, due fields. Empty array if none.
+
+If audio is too short or unclear, still return valid JSON with whatever you could capture.
+Never invent content that wasn't said.'''
+
+    audio_part = {
+        'inline_data': {
+            'mime_type': mime_type,
+            'data': base64.b64encode(audio_bytes).decode()
+        }
+    }
 
     try:
-        raw = await _generate(prompt, temperature=0.1)
-        if not raw or not raw.strip():
-            raise ValueError('Empty response from AI')
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        response = await asyncio.to_thread(
+            model.generate_content,
+            [prompt, audio_part],
+            generation_config={'temperature': 0.1, 'max_output_tokens': 4000},
+        )
+        raw = getattr(response, 'text', '') or ''
+        if not raw.strip():
+            raise ValueError('Empty response from Gemini')
         data = _extract_json(raw)
-    except Exception:
+    except Exception as exc:
         return {
-            'summary': 'Could not generate summary — transcript may be too short.',
-            'mom_markdown': f'Transcript:\n{transcript[:2000]}',
+            'transcript': '',
+            'summary': f'Could not process audio: {str(exc)[:200]}',
+            'mom_markdown': 'Audio processing failed.',
             'decisions': [],
             'action_items': [],
         }
 
     return {
+        'transcript': str(data.get('transcript') or ''),
         'summary': str(data.get('summary') or ''),
         'mom_markdown': str(data.get('mom_markdown') or ''),
         'decisions': data.get('decisions') if isinstance(data.get('decisions'), list) else [],
