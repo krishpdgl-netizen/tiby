@@ -1,29 +1,36 @@
-import time
-import redis.asyncio as redis
-from fastapi import HTTPException
+import logging
 from app.core.config import settings
 
-_client: redis.Redis | None = None
+log = logging.getLogger('tiby')
+_client = None
 
-
-def _redis() -> redis.Redis:
+def _redis():
     global _client
     if _client is None:
-        _client = redis.from_url(settings.REDIS_URL, encoding='utf-8', decode_responses=True)
+        try:
+            import redis.asyncio as redis
+            _client = redis.from_url(
+                settings.REDIS_URL,
+                encoding='utf-8',
+                decode_responses=True
+            )
+        except Exception as e:
+            log.warning('Redis unavailable, rate limiting disabled: %s', e)
+            return None
     return _client
 
-
-async def enforce_rate_limit(user_id: str, bucket: str = 'default', limit: int | None = None):
-    max_hits = limit or settings.RATE_LIMIT_PER_MINUTE
-    minute = int(time.time() // 60)
-    key = f'rl:{bucket}:{user_id}:{minute}'
+async def enforce_rate_limit(user_id: str, endpoint: str, limit: int):
     client = _redis()
+    if client is None:
+        return  # Skip rate limiting if Redis not available
     try:
-        current = await client.incr(key)
-        if current == 1:
-            await client.expire(key, 70)
-    except Exception:
-        # Do not take the app down because Redis is briefly unavailable.
-        return
-    if current > max_hits:
-        raise HTTPException(status_code=429, detail='Too many requests. Please try again shortly.')
+        key = f'rl:{user_id}:{endpoint}'
+        count = await client.incr(key)
+        if count == 1:
+            await client.expire(key, 60)
+        if count > limit:
+            from fastapi import HTTPException
+            raise HTTPException(429, 'Rate limit exceeded')
+    except Exception as e:
+        log.warning('Rate limit check failed: %s', e)
+        return  # Fail open
