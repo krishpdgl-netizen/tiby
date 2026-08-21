@@ -9,8 +9,7 @@ from app.core.rate_limit import enforce_rate_limit
 from app.models.models import Contact
 from app.schemas.contacts import ConfirmContactRequest
 from app.services.ai_service import extract_business_card
-from app.services.storage_service import upload_card_image, signed_url
-
+from app.services.storage_service import upload_card_image, get_signed_url
 router = APIRouter(prefix='/contacts', tags=['contacts'])
 
 @router.post('/scan-card')
