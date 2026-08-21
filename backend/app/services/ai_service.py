@@ -77,7 +77,7 @@ Never invent content that wasn't said.'''
     }
 
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel(settings.GEMINI_MODEL)
         response = await asyncio.to_thread(
             model.generate_content,
             [prompt, audio_part],
