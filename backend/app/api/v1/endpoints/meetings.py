@@ -1,16 +1,18 @@
+import asyncio
+import logging
 import uuid
-from fastapi import APIRouter, Depends, File, UploadFile, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, File, UploadFile, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import CurrentUser
 from app.core.config import settings
-from app.core.database import get_db
+from app.core.database import get_db, _get_session_factory
 from app.models.models import Meeting, Task, MeetingStatus
-from app.services.storage_service import upload_meeting_audio
-from app.workers.tasks import process_meeting
+from app.services.storage_service import upload_meeting_audio, download_private
 
+log = logging.getLogger("tiby")
 router = APIRouter(prefix="/meetings", tags=["meetings"])
 
 
@@ -27,10 +29,73 @@ async def start(req: StartMeetingRequest, user: CurrentUser, db: AsyncSession = 
     return {"meeting_id": str(m.id), "status": m.status.value}
 
 
+async def _process_meeting_bg(meeting_id: str, user_id: str):
+    """Run STT + MOM generation in the background using FastAPI BackgroundTasks."""
+    from app.services.stt_service import transcribe_audio
+    from app.services.ai_service import generate_mom
+
+    async with _get_session_factory()() as db:
+        try:
+            q = await db.execute(
+                select(Meeting).where(
+                    Meeting.id == uuid.UUID(meeting_id),
+                    Meeting.user_id == uuid.UUID(user_id)
+                )
+            )
+            m = q.scalar_one_or_none()
+            if not m:
+                log.error("Meeting not found: %s", meeting_id)
+                return
+
+            m.status = MeetingStatus.processing
+            await db.commit()
+
+            # Download audio from Supabase Storage
+            audio = await download_private(settings.STORAGE_AUDIO_BUCKET, m.audio_path)
+
+            # Transcribe
+            stt = await transcribe_audio(audio, is_meeting=True)
+            m.transcript = stt["transcript"]
+            m.duration_seconds = int(stt.get("duration", 0))
+            await db.commit()
+
+            # Generate MOM
+            mom = await generate_mom(m.transcript, m.title)
+            m.summary = mom["summary"]
+            m.mom = mom["mom_markdown"]
+            m.decisions = mom["decisions"]
+            m.action_items = mom["action_items"]
+            m.status = MeetingStatus.done
+
+            # Create tasks from action items
+            for item in m.action_items or []:
+                db.add(Task(
+                    user_id=m.user_id,
+                    meeting_id=m.id,
+                    title=str(item.get("task") or "Unnamed task")[:500],
+                    owner=item.get("owner"),
+                    due_date=item.get("due"),
+                    source="meeting",
+                ))
+
+            await db.commit()
+            log.info("Meeting %s processed successfully", meeting_id)
+
+        except Exception as exc:
+            log.exception("Meeting processing failed: %s", meeting_id)
+            try:
+                m.status = MeetingStatus.failed
+                m.processing_error = str(exc)[:4000]
+                await db.commit()
+            except Exception:
+                pass
+
+
 @router.post("/{meeting_id}/upload")
 async def upload(
     meeting_id: uuid.UUID,
     user: CurrentUser,
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
 ):
@@ -55,7 +120,9 @@ async def upload(
     m.processing_error = None
     await db.commit()
 
-    process_meeting.delay(str(m.id), str(user.id))
+    # Process in background — no Celery/Redis needed
+    background_tasks.add_task(_process_meeting_bg, str(m.id), str(user.id))
+
     return {"meeting_id": str(m.id), "status": "processing"}
 
 
