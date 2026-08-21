@@ -11,33 +11,14 @@ def utcnow():
     return datetime.now(timezone.utc)
 
 
-class TaskStatus(str, enum.Enum):
-    pending = 'pending'
-    done = 'done'
-    cancelled = 'cancelled'
-
-
-class MeetingStatus(str, enum.Enum):
-    recording = 'recording'
-    processing = 'processing'
-    done = 'done'
-    failed = 'failed'
-
-
-class AgentRunStatus(str, enum.Enum):
-    running = 'running'
-    completed = 'completed'
-    failed = 'failed'
-
-
 class User(Base):
     __tablename__ = 'users'
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)  # comes from Supabase, no default
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     name: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    gmail_access_token: Mapped[str | None] = mapped_column(Text)   # encrypted with Fernet
-    gmail_refresh_token: Mapped[str | None] = mapped_column(Text)  # encrypted with Fernet
+    gmail_access_token: Mapped[str | None] = mapped_column(Text)
+    gmail_refresh_token: Mapped[str | None] = mapped_column(Text)
     gmail_token_expiry: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     gmail_connected: Mapped[bool] = mapped_column(Boolean, default=False)
     preferences: Mapped[dict | None] = mapped_column(JSON, default=dict)
@@ -62,7 +43,6 @@ class Contact(Base):
     address: Mapped[str | None] = mapped_column(Text)
     notes: Mapped[str | None] = mapped_column(Text)
     raw_extraction: Mapped[dict | None] = mapped_column(JSON)
-    # Changed from card_image_url (public Drive URL) to card_image_path (private Supabase Storage)
     card_image_path: Mapped[str | None] = mapped_column(String(1000))
 
     user: Mapped['User'] = relationship(back_populates='contacts')
@@ -93,7 +73,6 @@ class Meeting(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     title: Mapped[str | None] = mapped_column(String(500))
     status: Mapped[str] = mapped_column(String(50), default='recording')
-    # Changed from audio_url (public) to audio_path (private Supabase Storage)
     audio_path: Mapped[str | None] = mapped_column(String(1000))
     duration_seconds: Mapped[int | None] = mapped_column(Integer)
     transcript: Mapped[str | None] = mapped_column(Text)
@@ -113,14 +92,18 @@ class Task(Base):
     __tablename__ = 'tasks'
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'), index=True)
+    # ── Cross-assignment: set when task is assigned to another Tiby user ──
+    assigned_to_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey('users.id', ondelete='SET NULL'), index=True, nullable=True
+    )
     meeting_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey('meetings.id', ondelete='SET NULL'))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     title: Mapped[str] = mapped_column(String(500))
     description: Mapped[str | None] = mapped_column(Text)
-    owner: Mapped[str | None] = mapped_column(String(255))
+    owner: Mapped[str | None] = mapped_column(String(255))  # display name (always stored)
     due_date: Mapped[str | None] = mapped_column(String(100))
     status: Mapped[str] = mapped_column(String(50), default='pending')
-    source: Mapped[str | None] = mapped_column(String(50))  # 'meeting', 'agent', 'manual', 'meeting_notes'
+    source: Mapped[str | None] = mapped_column(String(50))
 
     meeting: Mapped['Meeting | None'] = relationship(back_populates='tasks')
 
