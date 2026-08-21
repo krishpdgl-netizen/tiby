@@ -8,12 +8,19 @@ class ChatMessage(BaseModel):
 
 
 class AgentAction(BaseModel):
-    type: Literal['navigate', 'add_task', 'complete_task']
+    type: Literal['navigate', 'add_task', 'complete_task', 'add_contact']
     route: str | None = None
+    # task fields
     title: str | None = None
     due: str | None = None
     owner: str | None = None
     text: str | None = None
+    # contact fields
+    name: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    company: str | None = None
+    role: str | None = None
 
 
 class AgentPlan(BaseModel):
