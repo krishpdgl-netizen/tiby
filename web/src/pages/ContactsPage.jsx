@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
-import { listContacts, deleteContact } from '../services/api'
+import { listContacts, deleteContact, confirmContact } from '../services/api'
 
 const COLORS = ['ti-amber', 'ti-blue', 'ti-green', 'ti-purple', 'ti-red']
+const EMPTY_FORM = { name: '', email: '', phone: '', company: '', role: '' }
 
 export default function ContactsPage() {
   const [contacts, setContacts]     = useState([])
@@ -9,6 +10,10 @@ export default function ContactsPage() {
   const [search, setSearch]         = useState('')
   const [loading, setLoading]       = useState(true)
   const [selectedId, setSelectedId] = useState(null)
+  const [showForm, setShowForm]     = useState(false)
+  const [form, setForm]             = useState(EMPTY_FORM)
+  const [saving, setSaving]         = useState(false)
+  const [formErr, setFormErr]       = useState('')
 
   useEffect(() => { load() }, [])
 
@@ -23,10 +28,8 @@ export default function ContactsPage() {
 
   async function load() {
     setLoading(true)
-    try {
-      const { data } = await listContacts()
-      setContacts(data || [])
-    } catch { setContacts([]) }
+    try { const { data } = await listContacts(); setContacts(data || []) }
+    catch { setContacts([]) }
     finally { setLoading(false) }
   }
 
@@ -40,11 +43,24 @@ export default function ContactsPage() {
     } catch {}
   }
 
+  async function handleSave(e) {
+    e.preventDefault()
+    if (!form.name.trim()) { setFormErr('Name is required'); return }
+    setSaving(true); setFormErr('')
+    try {
+      const { data } = await confirmContact(form, null, {})
+      setContacts(prev => [data.contact, ...prev])
+      setForm(EMPTY_FORM)
+      setShowForm(false)
+    } catch (err) {
+      setFormErr(err?.response?.data?.detail || 'Failed to save contact')
+    } finally { setSaving(false) }
+  }
+
   function initials(name) {
     if (!name) return '?'
     return name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
   }
-
   function colorFor(i) { return COLORS[i % COLORS.length] }
 
   const selectedContact = selectedId ? contacts.find(c => c.id === selectedId) : null
@@ -60,11 +76,54 @@ export default function ContactsPage() {
   return (
     <div className="t-content" style={{ paddingTop: 16 }}>
 
-      <div className="t-search-wrap">
-        <i className="ti ti-search" aria-hidden="true" />
-        <input className="t-input" placeholder="Search contacts…"
-          value={search} onChange={e => setSearch(e.target.value)} />
+      {/* Search + Add button */}
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div className="t-search-wrap" style={{ flex: 1 }}>
+          <i className="ti ti-search" aria-hidden="true" />
+          <input className="t-input" placeholder="Search contacts…"
+            value={search} onChange={e => setSearch(e.target.value)} />
+        </div>
+        <button className="t-btn t-btn-primary"
+          style={{ marginTop: 0, width: 'auto', padding: '0 14px', height: 42, flexShrink: 0 }}
+          onClick={() => { setShowForm(s => !s); setFormErr('') }}>
+          <i className={`ti ${showForm ? 'ti-x' : 'ti-plus'}`} aria-hidden="true" />
+          {showForm ? 'Cancel' : 'Add'}
+        </button>
       </div>
+
+      {/* Manual add form */}
+      {showForm && (
+        <div className="t-card">
+          <div className="t-card-head">
+            <div className="t-icon ti-blue"><i className="ti ti-user-plus" aria-hidden="true" /></div>
+            <div>
+              <div className="t-ct">Add contact</div>
+              <div className="t-cs">Fill in the details manually</div>
+            </div>
+          </div>
+          <form onSubmit={handleSave} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {[
+              ['Full name *', 'name',    'text', 'Rahul Sharma'],
+              ['Email',       'email',   'email','rahul@company.com'],
+              ['Phone',       'phone',   'tel',  '+91 98765 43210'],
+              ['Company',     'company', 'text', 'Acme Corp'],
+              ['Role',        'role',    'text', 'Sales Manager'],
+            ].map(([label, key, type, ph]) => (
+              <div key={key}>
+                <label style={{ fontSize: 11, fontWeight: 600, color: '#6b7280', display: 'block', marginBottom: 3, textTransform: 'uppercase', letterSpacing: '.3px' }}>
+                  {label}
+                </label>
+                <input className="t-input" type={type} placeholder={ph}
+                  value={form[key]} onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))} />
+              </div>
+            ))}
+            {formErr && <p style={{ color: '#991b1b', fontSize: 12.5, margin: 0 }}>{formErr}</p>}
+            <button type="submit" className="t-btn t-btn-primary" disabled={saving}>
+              {saving ? 'Saving…' : 'Save contact'}
+            </button>
+          </form>
+        </div>
+      )}
 
       {loading ? (
         <div style={{ textAlign: 'center', padding: '40px 0', color: '#9ca3af', fontSize: 13 }}>Loading contacts…</div>
@@ -72,7 +131,7 @@ export default function ContactsPage() {
         <div className="t-card" style={{ textAlign: 'center', padding: '24px 16px' }}>
           <i className="ti ti-users" style={{ fontSize: 36, color: '#d1d5db', display: 'block', marginBottom: 10 }} aria-hidden="true" />
           <div className="t-ct" style={{ marginBottom: 6 }}>{search ? 'No contacts found' : 'No contacts yet'}</div>
-          <div className="t-cs">{search ? 'Try a different search' : 'Scan a visiting card to add your first contact'}</div>
+          <div className="t-cs">{search ? 'Try a different search' : 'Scan a visiting card or add manually'}</div>
         </div>
       ) : (
         <>
