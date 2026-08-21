@@ -29,17 +29,12 @@ async def chat(req: AgentChatRequest, user: CurrentUser, db: AsyncSession = Depe
 
     try:
         contacts_result = await db.execute(
-            select(Contact)
-            .where(Contact.user_id == user.id)
-            .order_by(Contact.created_at.desc())
-            .limit(10)
+            select(Contact).where(Contact.user_id == user.id)
+            .order_by(Contact.created_at.desc()).limit(10)
         )
-
         tasks_result = await db.execute(
-            select(Task)
-            .where(Task.user_id == user.id, Task.status == 'pending')
-            .order_by(Task.created_at.desc())
-            .limit(20)
+            select(Task).where(Task.user_id == user.id, Task.status == 'pending')
+            .order_by(Task.created_at.desc()).limit(20)
         )
 
         context = {
@@ -81,8 +76,7 @@ async def chat(req: AgentChatRequest, user: CurrentUser, db: AsyncSession = Depe
 
             elif action.type == 'complete_task' and action.text:
                 q = await db.execute(
-                    select(Task)
-                    .where(Task.user_id == user.id, Task.status == 'pending')
+                    select(Task).where(Task.user_id == user.id, Task.status == 'pending')
                     .order_by(Task.created_at.desc())
                 )
                 candidates = q.scalars().all()
@@ -96,6 +90,19 @@ async def chat(req: AgentChatRequest, user: CurrentUser, db: AsyncSession = Depe
                     result = {'ok': True, 'task_id': str(match.id), 'title': match.title}
                 else:
                     result = {'ok': False, 'reason': 'No matching open task found'}
+
+            elif action.type == 'add_contact' and action.name:
+                contact = Contact(
+                    user_id=user.id,
+                    name=action.name,
+                    email=action.email,
+                    phone=action.phone,
+                    company=action.company,
+                    role=action.role,
+                )
+                db.add(contact)
+                await db.flush()
+                result = {'ok': True, 'contact_id': str(contact.id), 'name': contact.name}
 
             db.add(AgentStep(
                 run_id=run.id,
