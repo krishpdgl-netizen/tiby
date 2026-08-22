@@ -427,11 +427,6 @@ export default function MeetingPage() {
   )
 }
 
-function buildWaUrl(phone, text) {
-  if (phone) { const num = phone.replace(/\D/g, ''); return `https://wa.me/${num}?text=${encodeURIComponent(text)}` }
-  return `https://wa.me/?text=${encodeURIComponent(text)}`
-}
-
 function toast(msg, type = 'info') {
   let el = document.getElementById('t-toast')
   if (!el) { el = document.createElement('div'); el.id = 't-toast'; document.body.appendChild(el) }
