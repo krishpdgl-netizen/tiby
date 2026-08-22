@@ -110,3 +110,15 @@ async def health():
 @app.get("/")
 async def root():
     return {"status": "ok", "app": "Tiby API", "version": "2.0.0"}
+import httpx, asyncio
+
+@app.on_event("startup")
+async def keep_alive():
+    async def ping():
+        while True:
+            await asyncio.sleep(800)  # every 10 min
+            try:
+                async with httpx.AsyncClient() as c:
+                    await c.get("https://tiby.onrender.com/healthz", timeout=5)
+            except: pass
+    asyncio.create_task(ping())
