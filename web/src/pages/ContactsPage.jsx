@@ -4,17 +4,71 @@ import { listContacts, deleteContact, confirmContact, getFollowups } from '../se
 const COLORS = ['ti-amber', 'ti-blue', 'ti-green', 'ti-purple', 'ti-red']
 const EMPTY_FORM = { name: '', email: '', phone: '', company: '', role: '' }
 
+function ActionButtons({ contact, compact = false }) {
+  const phone = contact.phone?.replace(/\D/g, '')
+  const waUrl = phone ? `https://wa.me/${phone}` : null
+
+  if (compact) return (
+    <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+      {phone && (
+        <a href={`tel:${contact.phone}`}
+          style={{ width: 30, height: 30, borderRadius: 8, background: '#d1fae5', display: 'flex', alignItems: 'center', justifyContent: 'center', textDecoration: 'none' }}
+          title="Call">
+          <i className="ti ti-phone" style={{ fontSize: 14, color: '#065f46' }} aria-hidden="true" />
+        </a>
+      )}
+      {waUrl && (
+        <a href={waUrl} target="_blank" rel="noopener noreferrer"
+          style={{ width: 30, height: 30, borderRadius: 8, background: '#dcfce7', display: 'flex', alignItems: 'center', justifyContent: 'center', textDecoration: 'none' }}
+          title="WhatsApp">
+          <span style={{ fontSize: 14 }}>💬</span>
+        </a>
+      )}
+      {contact.email && (
+        <a href={`mailto:${contact.email}`}
+          style={{ width: 30, height: 30, borderRadius: 8, background: '#dbeafe', display: 'flex', alignItems: 'center', justifyContent: 'center', textDecoration: 'none' }}
+          title="Email">
+          <i className="ti ti-mail" style={{ fontSize: 14, color: '#1e40af' }} aria-hidden="true" />
+        </a>
+      )}
+    </div>
+  )
+
+  return (
+    <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+      {phone && (
+        <a href={`tel:${contact.phone}`} className="t-btn t-btn-green"
+          style={{ flex: 1, textDecoration: 'none', display: 'flex', justifyContent: 'center' }}>
+          <i className="ti ti-phone" aria-hidden="true" /> Call
+        </a>
+      )}
+      {waUrl && (
+        <a href={waUrl} target="_blank" rel="noopener noreferrer"
+          className="t-btn" style={{ flex: 1, textDecoration: 'none', display: 'flex', justifyContent: 'center', background: '#25d366', color: '#fff', border: 'none' }}>
+          💬 WhatsApp
+        </a>
+      )}
+      {contact.email && (
+        <a href={`mailto:${contact.email}`} className="t-btn t-btn-primary"
+          style={{ flex: 1, textDecoration: 'none', display: 'flex', justifyContent: 'center' }}>
+          <i className="ti ti-mail" aria-hidden="true" /> Email
+        </a>
+      )}
+    </div>
+  )
+}
+
 export default function ContactsPage() {
-  const [contacts, setContacts]     = useState([])
-  const [filtered, setFiltered]     = useState([])
-  const [search, setSearch]         = useState('')
-  const [loading, setLoading]       = useState(true)
-  const [selectedId, setSelectedId] = useState(null)
-  const [showForm, setShowForm]     = useState(false)
-  const [form, setForm]             = useState(EMPTY_FORM)
-  const [saving, setSaving]         = useState(false)
-  const [formErr, setFormErr]       = useState('')
-  const [followups, setFollowups]   = useState([])
+  const [contacts, setContacts]         = useState([])
+  const [filtered, setFiltered]         = useState([])
+  const [search, setSearch]             = useState('')
+  const [loading, setLoading]           = useState(true)
+  const [selectedId, setSelectedId]     = useState(null)
+  const [showForm, setShowForm]         = useState(false)
+  const [form, setForm]                 = useState(EMPTY_FORM)
+  const [saving, setSaving]             = useState(false)
+  const [formErr, setFormErr]           = useState('')
+  const [followups, setFollowups]       = useState([])
   const [showFollowups, setShowFollowups] = useState(true)
 
   useEffect(() => { load() }, [])
@@ -31,7 +85,10 @@ export default function ContactsPage() {
   async function load() {
     setLoading(true)
     try {
-      const [cRes, fRes] = await Promise.all([listContacts(), getFollowups().catch(() => ({ data: [] }))])
+      const [cRes, fRes] = await Promise.all([
+        listContacts(),
+        getFollowups().catch(() => ({ data: [] })),
+      ])
       setContacts(cRes.data || [])
       setFollowups(fRes.data || [])
     } catch { setContacts([]) }
@@ -72,10 +129,7 @@ export default function ContactsPage() {
 
   const orgs = {}
   contacts.forEach(c => {
-    if (c.company) {
-      if (!orgs[c.company]) orgs[c.company] = []
-      orgs[c.company].push(c)
-    }
+    if (c.company) { if (!orgs[c.company]) orgs[c.company] = []; orgs[c.company].push(c) }
   })
 
   return (
@@ -101,15 +155,15 @@ export default function ContactsPage() {
         <div className="t-card">
           <div className="t-card-head">
             <div className="t-icon ti-blue"><i className="ti ti-user-plus" aria-hidden="true" /></div>
-            <div><div className="t-ct">Add contact</div><div className="t-cs">Fill in the details manually</div></div>
+            <div><div className="t-ct">Add contact</div><div className="t-cs">Fill in the details</div></div>
           </div>
           <form onSubmit={handleSave} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {[
-              ['Full name *', 'name', 'text', 'Rahul Sharma'],
-              ['Email', 'email', 'email', 'rahul@company.com'],
-              ['Phone', 'phone', 'tel', '+91 98765 43210'],
-              ['Company', 'company', 'text', 'Acme Corp'],
-              ['Role', 'role', 'text', 'Sales Manager'],
+              ['Full name *', 'name',    'text',  'Rahul Sharma'],
+              ['Email',       'email',   'email', 'rahul@company.com'],
+              ['Phone',       'phone',   'tel',   '+91 98765 43210'],
+              ['Company',     'company', 'text',  'Acme Corp'],
+              ['Role',        'role',    'text',  'Sales Manager'],
             ].map(([label, key, type, ph]) => (
               <div key={key}>
                 <label style={{ fontSize: 11, fontWeight: 600, color: '#6b7280', display: 'block', marginBottom: 3, textTransform: 'uppercase', letterSpacing: '.3px' }}>{label}</label>
@@ -148,10 +202,7 @@ export default function ContactsPage() {
                 <div style={{ fontSize: 13, fontWeight: 600, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</div>
                 <div style={{ fontSize: 12, color: '#92400e' }}>{f.reason}</div>
               </div>
-              <a href={`mailto:${f.email}`}
-                style={{ fontSize: 12, color: '#1e40af', fontWeight: 600, textDecoration: 'none', flexShrink: 0, padding: '4px 10px', border: '1px solid #93c5fd', borderRadius: 8 }}>
-                Email
-              </a>
+              <ActionButtons contact={f} compact />
             </div>
           ))}
         </div>
@@ -206,13 +257,16 @@ export default function ContactsPage() {
                     {[c.company, c.role].filter(Boolean).join(' · ') || c.email || 'No details'}
                   </div>
                 </div>
-                {followups.some(f => f.id === c.id) && (
-                  <i className="ti ti-bell" style={{ fontSize: 14, color: '#f59e0b', flexShrink: 0, marginRight: 4 }} aria-hidden="true" />
-                )}
-                <button onClick={e => handleDelete(c.id, e)}
-                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#d1d5db', fontSize: 16, padding: 4, flexShrink: 0 }}>
-                  <i className="ti ti-trash" aria-hidden="true" />
-                </button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  {followups.some(f => f.id === c.id) && (
+                    <i className="ti ti-bell" style={{ fontSize: 13, color: '#f59e0b' }} aria-hidden="true" />
+                  )}
+                  <ActionButtons contact={c} compact />
+                  <button onClick={e => handleDelete(c.id, e)}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#d1d5db', fontSize: 16, padding: 4 }}>
+                    <i className="ti ti-trash" aria-hidden="true" />
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -231,8 +285,8 @@ export default function ContactsPage() {
               </div>
               {[
                 ['Company', selectedContact.company],
-                ['Email', selectedContact.email],
-                ['Phone', selectedContact.phone],
+                ['Email',   selectedContact.email],
+                ['Phone',   selectedContact.phone],
                 ['Website', selectedContact.website],
               ].filter(([, v]) => v).map(([l, v]) => (
                 <div key={l} style={{ display: 'flex', gap: 10, padding: '6px 0', borderBottom: '1px solid #f0f0ef', fontSize: 13 }}>
@@ -240,20 +294,7 @@ export default function ContactsPage() {
                   <span style={{ color: '#1a1a1a' }}>{v}</span>
                 </div>
               ))}
-              {selectedContact.email && (
-                <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-                  <a href={`mailto:${selectedContact.email}`}
-                    className="t-btn t-btn-primary" style={{ flex: 1, textDecoration: 'none', display: 'flex', justifyContent: 'center' }}>
-                    <i className="ti ti-mail" aria-hidden="true" /> Email
-                  </a>
-                  {selectedContact.phone && (
-                    <a href={`https://wa.me/${selectedContact.phone.replace(/\D/g, '')}`} target="_blank" rel="noopener noreferrer"
-                      className="t-btn t-btn-green" style={{ flex: 1, textDecoration: 'none', display: 'flex', justifyContent: 'center' }}>
-                      <i className="ti ti-brand-whatsapp" aria-hidden="true" /> WhatsApp
-                    </a>
-                  )}
-                </div>
-              )}
+              <ActionButtons contact={selectedContact} />
             </div>
           )}
         </>
