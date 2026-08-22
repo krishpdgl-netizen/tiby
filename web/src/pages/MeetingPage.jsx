@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { startMeeting, uploadMeetingAudio, getMeeting, processMeetingNotes, listMeetings } from '../services/api'
+import { startMeeting, uploadMeetingAudio, getMeeting, processMeetingNotes, listMeetings, getProfile } from '../services/api'
 
 function getSupportedMimeType() {
   const types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4']
@@ -20,27 +20,37 @@ function timeAgo(iso) {
   return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })
 }
 
-// ── Meeting History view ──────────────────────────────────────────────────────
-function MeetingHistory({ onSelect }) {
+function buildWaUrl(phone, text) {
+  if (phone) {
+    const num = phone.replace(/\D/g, '')
+    return `https://wa.me/${num}?text=${encodeURIComponent(text)}`
+  }
+  return `https://wa.me/?text=${encodeURIComponent(text)}`
+}
+
+function MeetingHistory() {
   const [meetings, setMeetings] = useState([])
-  const [loading, setLoading]  = useState(true)
+  const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState(null)
+  const [myPhone, setMyPhone] = useState('')
 
   useEffect(() => {
-    listMeetings().then(r => setMeetings(r.data || [])).catch(() => {}).finally(() => setLoading(false))
+    Promise.all([
+      listMeetings().then(r => setMeetings(r.data || [])),
+      getProfile().then(r => setMyPhone(r.data?.mobile || '')).catch(() => {}),
+    ]).finally(() => setLoading(false))
   }, [])
 
-  if (selected) return <MeetingDetail meeting={selected} onBack={() => setSelected(null)} />
+  if (selected) return <MeetingDetail meeting={selected} myPhone={myPhone} onBack={() => setSelected(null)} />
 
   const done = meetings.filter(m => m.status === 'done')
 
   return (
     <div className="t-content" style={{ paddingTop: 16 }}>
-      <div className="t-card-head" style={{ marginBottom: 12, padding: '0 2px' }}>
+      <div style={{ marginBottom: 12, padding: '0 2px' }}>
         <div className="t-ct">Past meetings</div>
         <div className="t-cs">{done.length} completed</div>
       </div>
-
       {loading ? (
         <div style={{ textAlign: 'center', padding: '40px 0', color: '#9ca3af', fontSize: 13 }}>Loading…</div>
       ) : done.length === 0 ? (
@@ -53,7 +63,7 @@ function MeetingHistory({ onSelect }) {
         <div className="t-card" style={{ padding: '4px 14px' }}>
           {done.map(m => (
             <div key={m.id} className="t-row" onClick={() => setSelected(m)} style={{ cursor: 'pointer' }}>
-              <div className="t-row-av ti-red" style={{ background: '#fee2e2', color: '#991b1b' }}>
+              <div className="t-row-av" style={{ background: '#fee2e2', color: '#991b1b', borderRadius: 10 }}>
                 <i className="ti ti-microphone" aria-hidden="true" />
               </div>
               <div style={{ flex: 1, minWidth: 0 }}>
@@ -74,16 +84,16 @@ function MeetingHistory({ onSelect }) {
   )
 }
 
-function MeetingDetail({ meeting, onBack }) {
-  const waText = encodeURIComponent(`*MOM: ${meeting.title || 'Meeting'}*\n\n${meeting.summary || ''}\n\n${meeting.mom || ''}`.slice(0, 4096))
-  const mailText = `mailto:?subject=${encodeURIComponent('MOM: ' + (meeting.title || 'Meeting'))}&body=${encodeURIComponent(meeting.mom || meeting.summary || '')}`
+function MeetingDetail({ meeting, myPhone, onBack }) {
+  const momText = `*MOM: ${meeting.title || 'Meeting'}*\n\n${meeting.summary || ''}\n\n${meeting.mom || ''}`.slice(0, 4096)
+  const waUrl   = buildWaUrl(myPhone, momText)
+  const mailHref = `mailto:?subject=${encodeURIComponent('MOM: ' + (meeting.title || 'Meeting'))}&body=${encodeURIComponent(meeting.mom || meeting.summary || '')}`
 
   return (
     <div className="t-content" style={{ paddingTop: 16 }}>
       <button onClick={onBack} className="t-btn t-btn-ghost" style={{ marginBottom: 8 }}>
-        <i className="ti ti-arrow-left" aria-hidden="true" /> Back to history
+        <i className="ti ti-arrow-left" aria-hidden="true" /> Back
       </button>
-
       <div className="t-card success">
         <div className="t-card-head">
           <div className="t-icon ti-green"><i className="ti ti-check" aria-hidden="true" /></div>
@@ -92,14 +102,12 @@ function MeetingDetail({ meeting, onBack }) {
             <div className="t-cs">{timeAgo(meeting.created_at)}</div>
           </div>
         </div>
-
         {meeting.summary && (
           <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 10, padding: 12, marginBottom: 12 }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: '#065f46', textTransform: 'uppercase', letterSpacing: '.4px', marginBottom: 6 }}>Summary</div>
             <p style={{ fontSize: 13.5, color: '#1a1a1a', lineHeight: 1.6, margin: 0 }}>{meeting.summary}</p>
           </div>
         )}
-
         {meeting.action_items?.length > 0 && (
           <div style={{ marginBottom: 12 }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: '#1e40af', textTransform: 'uppercase', letterSpacing: '.4px', marginBottom: 10 }}>Action items</div>
@@ -117,7 +125,6 @@ function MeetingDetail({ meeting, onBack }) {
             ))}
           </div>
         )}
-
         {meeting.mom && (
           <details style={{ marginBottom: 12 }}>
             <summary style={{ fontSize: 13, fontWeight: 600, color: '#6b7280', cursor: 'pointer', userSelect: 'none', listStyle: 'none' }}>
@@ -128,39 +135,40 @@ function MeetingDetail({ meeting, onBack }) {
             </div>
           </details>
         )}
-
-        {/* Share buttons */}
-        <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-          <a href={`https://wa.me/?text=${waText}`} target="_blank" rel="noopener noreferrer"
+        <div style={{ display: 'flex', gap: 8 }}>
+          <a href={waUrl} target="_blank" rel="noopener noreferrer"
             className="t-btn t-btn-green" style={{ flex: 1, textDecoration: 'none', display: 'flex', justifyContent: 'center' }}>
-            <i className="ti ti-brand-whatsapp" aria-hidden="true" /> WhatsApp
+            📱 {myPhone ? 'Send to me' : 'WhatsApp'}
           </a>
-          <a href={mailText}
-            className="t-btn t-btn-primary" style={{ flex: 1, textDecoration: 'none', display: 'flex', justifyContent: 'center' }}>
+          <a href={mailHref} className="t-btn t-btn-primary" style={{ flex: 1, textDecoration: 'none', display: 'flex', justifyContent: 'center' }}>
             <i className="ti ti-mail" aria-hidden="true" /> Email
           </a>
         </div>
+        {myPhone && (
+          <div style={{ fontSize: 11.5, color: '#9ca3af', textAlign: 'center', marginTop: 6 }}>
+            Sending to your number: {myPhone}
+          </div>
+        )}
       </div>
     </div>
   )
 }
 
-// ── Main MeetingPage ──────────────────────────────────────────────────────────
 export default function MeetingPage() {
-  const [tab, setTab]             = useState('new')   // 'new' | 'history'
-  const [title, setTitle]         = useState('')
-  const [mode, setMode]           = useState(null)
-  const [result, setResult]       = useState(null)
-  const [loading, setLoading]     = useState(false)
-  const [status, setStatus]       = useState('')
-  const [dot, setDot]             = useState('idle')
-  const [noteBlob, setNoteBlob]   = useState(null)
+  const [tab, setTab]           = useState('new')
+  const [title, setTitle]       = useState('')
+  const [mode, setMode]         = useState(null)
+  const [result, setResult]     = useState(null)
+  const [loading, setLoading]   = useState(false)
+  const [status, setStatus]     = useState('')
+  const [dot, setDot]           = useState('idle')
+  const [noteBlob, setNoteBlob] = useState(null)
   const [notePreview, setNotePreview] = useState(null)
   const [cameraOpen, setCameraOpen]   = useState(false)
-  const [recording, setRecording] = useState(false)
-  const [elapsed, setElapsed]     = useState(0)
-  const [meetingId, setMeetingId] = useState(null)
+  const [recording, setRecording]     = useState(false)
+  const [elapsed, setElapsed]   = useState(0)
   const [pollTimer, setPollTimer] = useState(null)
+  const [myPhone, setMyPhone]   = useState('')
 
   const videoRef  = useRef()
   const streamRef = useRef()
@@ -169,6 +177,7 @@ export default function MeetingPage() {
   const timerRef  = useRef()
 
   useEffect(() => {
+    getProfile().then(r => setMyPhone(r.data?.mobile || '')).catch(() => {})
     return () => {
       streamRef.current?.getTracks().forEach(t => t.stop())
       try { mrRef.current?.stop() } catch {}
@@ -181,8 +190,7 @@ export default function MeetingPage() {
     return new Promise(resolve => {
       const s = Math.min(max / canvas.width, max / canvas.height, 1)
       const out = document.createElement('canvas')
-      out.width = Math.round(canvas.width * s)
-      out.height = Math.round(canvas.height * s)
+      out.width = Math.round(canvas.width * s); out.height = Math.round(canvas.height * s)
       out.getContext('2d').drawImage(canvas, 0, 0, out.width, out.height)
       out.toBlob(resolve, 'image/jpeg', 0.82)
     })
@@ -191,25 +199,18 @@ export default function MeetingPage() {
   async function openCamera() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
-      streamRef.current = stream
-      videoRef.current.srcObject = stream
-      videoRef.current.style.display = 'block'
-      setCameraOpen(true)
+      streamRef.current = stream; videoRef.current.srcObject = stream
+      videoRef.current.style.display = 'block'; setCameraOpen(true)
     } catch { toast('Camera access denied', 'error') }
   }
 
   async function snapPhoto() {
     const cv = document.createElement('canvas')
-    cv.width = videoRef.current.videoWidth
-    cv.height = videoRef.current.videoHeight
+    cv.width = videoRef.current.videoWidth; cv.height = videoRef.current.videoHeight
     cv.getContext('2d').drawImage(videoRef.current, 0, 0)
-    streamRef.current?.getTracks().forEach(t => t.stop())
-    streamRef.current = null
-    videoRef.current.style.display = 'none'
-    setCameraOpen(false)
-    const blob = await resize(cv)
-    setNoteBlob(blob)
-    setNotePreview(URL.createObjectURL(blob))
+    streamRef.current?.getTracks().forEach(t => t.stop()); streamRef.current = null
+    videoRef.current.style.display = 'none'; setCameraOpen(false)
+    const blob = await resize(cv); setNoteBlob(blob); setNotePreview(URL.createObjectURL(blob))
   }
 
   async function processNotes() {
@@ -229,15 +230,12 @@ export default function MeetingPage() {
     if (!title.trim()) return toast('Enter a meeting title first', 'error')
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      streamRef.current = stream
-      chunksRef.current = []
+      streamRef.current = stream; chunksRef.current = []
       const mimeType = getSupportedMimeType()
       const mr = new MediaRecorder(stream, mimeType ? { mimeType } : {})
       mrRef.current = mr
       mr.ondataavailable = e => { if (e.data.size > 0) chunksRef.current.push(e.data) }
-      mr.start(1000)
-      setRecording(true); setElapsed(0)
-      setDot('active'); setStatus('Recording…')
+      mr.start(1000); setRecording(true); setElapsed(0); setDot('active'); setStatus('Recording…')
       timerRef.current = setInterval(() => setElapsed(s => s + 1), 1000)
     } catch (e) { toast('Could not start recording: ' + e.message, 'error') }
   }
@@ -248,28 +246,25 @@ export default function MeetingPage() {
     const mimeType = mrRef.current?.mimeType || 'audio/webm'
     await new Promise(resolve => {
       mrRef.current.onstop = resolve
-      streamRef.current?.getTracks().forEach(t => t.stop())
-      streamRef.current = null
+      streamRef.current?.getTracks().forEach(t => t.stop()); streamRef.current = null
       try { mrRef.current.stop() } catch {}
     })
     const blob = new Blob(chunksRef.current, { type: mimeType })
     try {
       setStatus('Creating meeting…')
       const { data: md } = await startMeeting(title)
-      setMeetingId(md.meeting_id)
       setStatus('Uploading audio…')
       await uploadMeetingAudio(md.meeting_id, blob)
       setStatus('Processing — this may take a minute…')
       pollMeeting(md.meeting_id)
     } catch (e) {
       setDot('warn'); setStatus('Failed to save meeting')
-      toast(e?.response?.data?.detail || 'Failed', 'error')
-      setLoading(false)
+      toast(e?.response?.data?.detail || 'Failed', 'error'); setLoading(false)
     }
   }
 
   async function pollMeeting(id, attempts = 0) {
-    if (attempts > 30) { setDot('warn'); setStatus('Taking longer than expected — check back soon'); setLoading(false); return }
+    if (attempts > 30) { setDot('warn'); setStatus('Taking longer — check back soon'); setLoading(false); return }
     try {
       const { data } = await getMeeting(id)
       if (data.status === 'done') { setResult(data); setDot('done'); setStatus('Minutes ready'); setLoading(false) }
@@ -279,28 +274,23 @@ export default function MeetingPage() {
   }
 
   function reset() {
-    setMode(null); setResult(null); setTitle(''); setMeetingId(null)
-    setStatus(''); setDot('idle'); setNoteBlob(null); setNotePreview(null); setCameraOpen(false)
-    setRecording(false); setElapsed(0)
+    setMode(null); setResult(null); setTitle(''); setStatus(''); setDot('idle')
+    setNoteBlob(null); setNotePreview(null); setCameraOpen(false); setRecording(false); setElapsed(0)
     streamRef.current?.getTracks().forEach(t => t.stop()); streamRef.current = null
     if (videoRef.current) { videoRef.current.style.display = 'none'; videoRef.current.srcObject = null }
-    clearInterval(timerRef.current)
-    try { mrRef.current?.stop() } catch {}
+    clearInterval(timerRef.current); try { mrRef.current?.stop() } catch {}
   }
 
-  const waText  = result ? encodeURIComponent(`*MOM: ${result.title || 'Meeting'}*\n\n${result.summary || ''}\n\n${result.mom || ''}`.slice(0, 4096)) : ''
+  const momText  = result ? `*MOM: ${result.title || 'Meeting'}*\n\n${result.summary || ''}\n\n${result.mom || ''}`.slice(0, 4096) : ''
+  const waUrl    = result ? buildWaUrl(myPhone, momText) : '#'
   const mailHref = result ? `mailto:?subject=${encodeURIComponent('MOM: ' + (result.title || 'Meeting'))}&body=${encodeURIComponent(result.mom || result.summary || '')}` : '#'
 
-  // ── Result view ──────────────────────────────────────────────────────────────
   if (result) return (
     <div className="t-content" style={{ paddingTop: 16 }}>
       <div className="t-card success">
         <div className="t-card-head">
           <div className="t-icon ti-green"><i className="ti ti-check" aria-hidden="true" /></div>
-          <div>
-            <div className="t-ct">{result.title || 'Meeting'}</div>
-            <div className="t-cs">Minutes ready</div>
-          </div>
+          <div><div className="t-ct">{result.title || 'Meeting'}</div><div className="t-cs">Minutes ready</div></div>
         </div>
         {result.summary && (
           <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 10, padding: 12, marginBottom: 12 }}>
@@ -335,16 +325,16 @@ export default function MeetingPage() {
             </div>
           </details>
         )}
-        {/* Share row */}
         <div style={{ display: 'flex', gap: 8 }}>
-          <a href={`https://wa.me/?text=${waText}`} target="_blank" rel="noopener noreferrer"
+          <a href={waUrl} target="_blank" rel="noopener noreferrer"
             className="t-btn t-btn-green" style={{ flex: 1, textDecoration: 'none', display: 'flex', justifyContent: 'center' }}>
-            <i className="ti ti-brand-whatsapp" aria-hidden="true" /> WhatsApp
+            📱 {myPhone ? 'Send to me' : 'WhatsApp'}
           </a>
           <a href={mailHref} className="t-btn t-btn-primary" style={{ flex: 1, textDecoration: 'none', display: 'flex', justifyContent: 'center' }}>
             <i className="ti ti-mail" aria-hidden="true" /> Email
           </a>
         </div>
+        {myPhone && <div style={{ fontSize: 11.5, color: '#9ca3af', textAlign: 'center', marginTop: 6 }}>To: {myPhone}</div>}
         <button className="t-btn t-btn-ghost" onClick={reset} style={{ marginTop: 8 }}>
           <i className="ti ti-plus" aria-hidden="true" /> New meeting
         </button>
@@ -352,10 +342,8 @@ export default function MeetingPage() {
     </div>
   )
 
-  // ── Main view ─────────────────────────────────────────────────────────────────
   return (
     <div className="t-content" style={{ paddingTop: 16 }}>
-      {/* Tab switcher */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
         {[['new', 'New meeting'], ['history', 'History']].map(([key, label]) => (
           <button key={key} onClick={() => setTab(key)} style={{
@@ -372,50 +360,32 @@ export default function MeetingPage() {
           <div className="t-card">
             <div className="t-card-head">
               <div className="t-icon ti-gray"><i className="ti ti-calendar" aria-hidden="true" /></div>
-              <div>
-                <div className="t-ct">New meeting</div>
-                <div className="t-cs">Enter title then choose an option</div>
-              </div>
+              <div><div className="t-ct">New meeting</div><div className="t-cs">Enter title then choose an option</div></div>
             </div>
             <input className="t-input" placeholder="Meeting title — e.g. Client call with Rahul"
               value={title} onChange={e => setTitle(e.target.value)} disabled={loading || recording} />
           </div>
 
-          {/* Notes scan */}
           <div className={`t-card ${mode === 'notes' ? 'accent' : ''}`}>
             <div className="t-card-head">
               <div className="t-icon ti-amber"><i className="ti ti-pencil" aria-hidden="true" /></div>
-              <div>
-                <div className="t-ct">Scan handwritten notes</div>
-                <div className="t-cs">Photo → AI minutes + tasks</div>
-              </div>
+              <div><div className="t-ct">Scan handwritten notes</div><div className="t-cs">Photo → AI minutes + tasks</div></div>
             </div>
             {mode !== 'notes' ? (
               <button className="t-btn t-btn-amber" onClick={() => {
                 if (!title.trim()) return toast('Enter a meeting title first', 'error')
                 setMode('notes'); setTimeout(() => openCamera(), 50)
-              }}>
-                <i className="ti ti-pencil" aria-hidden="true" /> Scan notes
-              </button>
+              }}><i className="ti ti-pencil" aria-hidden="true" /> Scan notes</button>
             ) : (
               <>
-                <video ref={videoRef} autoPlay playsInline muted
-                  style={{ display: 'none', width: '100%', borderRadius: 11, marginBottom: 10, background: '#000', aspectRatio: '4/3', objectFit: 'cover' }} />
+                <video ref={videoRef} autoPlay playsInline muted style={{ display: 'none', width: '100%', borderRadius: 11, marginBottom: 10, background: '#000', aspectRatio: '4/3', objectFit: 'cover' }} />
                 {notePreview && <img src={notePreview} alt="Notes" style={{ width: '100%', borderRadius: 11, marginBottom: 10, aspectRatio: '4/3', objectFit: 'cover' }} />}
-                {!cameraOpen && !noteBlob && !loading && (
-                  <button className="t-btn t-btn-amber" onClick={openCamera}><i className="ti ti-camera" aria-hidden="true" /> Open camera</button>
-                )}
-                {cameraOpen && (
-                  <button className="t-btn t-btn-green" onClick={snapPhoto}><i className="ti ti-camera-selfie" aria-hidden="true" /> Snap photo</button>
-                )}
+                {!cameraOpen && !noteBlob && !loading && <button className="t-btn t-btn-amber" onClick={openCamera}><i className="ti ti-camera" aria-hidden="true" /> Open camera</button>}
+                {cameraOpen && <button className="t-btn t-btn-green" onClick={snapPhoto}><i className="ti ti-camera-selfie" aria-hidden="true" /> Snap photo</button>}
                 {noteBlob && !loading && (
                   <div style={{ display: 'flex', gap: 8 }}>
-                    <button className="t-btn t-btn-ghost" style={{ flex: 1 }} onClick={() => { setNoteBlob(null); setNotePreview(null); openCamera() }}>
-                      <i className="ti ti-refresh" aria-hidden="true" /> Retake
-                    </button>
-                    <button className="t-btn t-btn-primary" style={{ flex: 2, marginTop: 0 }} onClick={processNotes}>
-                      <i className="ti ti-wand" aria-hidden="true" /> Process notes
-                    </button>
+                    <button className="t-btn t-btn-ghost" style={{ flex: 1 }} onClick={() => { setNoteBlob(null); setNotePreview(null); openCamera() }}><i className="ti ti-refresh" aria-hidden="true" /> Retake</button>
+                    <button className="t-btn t-btn-primary" style={{ flex: 2, marginTop: 0 }} onClick={processNotes}><i className="ti ti-wand" aria-hidden="true" /> Process notes</button>
                   </div>
                 )}
                 {loading && <div className="t-dot-row"><span className="t-dot t-dot-active" /><span>{status}</span></div>}
@@ -423,14 +393,10 @@ export default function MeetingPage() {
             )}
           </div>
 
-          {/* Record */}
           <div className={`t-card ${mode === 'record' ? 'danger' : ''}`}>
             <div className="t-card-head">
               <div className="t-icon ti-red"><i className="ti ti-microphone" aria-hidden="true" /></div>
-              <div>
-                <div className="t-ct">Record meeting</div>
-                <div className="t-cs">Live audio → AI minutes + tasks</div>
-              </div>
+              <div><div className="t-ct">Record meeting</div><div className="t-cs">Live audio → AI minutes + tasks</div></div>
             </div>
             {mode !== 'record' ? (
               <button className="t-btn t-btn-primary" onClick={() => { setMode('record'); setTimeout(() => startRecording(), 50) }}>
@@ -445,16 +411,10 @@ export default function MeetingPage() {
                       <span style={{ fontFamily: 'monospace', fontSize: 22, color: '#ef4444', fontWeight: 600 }}>{fmt(elapsed)}</span>
                       <span style={{ fontSize: 13, color: '#6b7280' }}>Recording…</span>
                     </div>
-                    <button className="t-btn t-btn-red" onClick={stopRecording}>
-                      <i className="ti ti-square" aria-hidden="true" /> Stop and process
-                    </button>
+                    <button className="t-btn t-btn-red" onClick={stopRecording}><i className="ti ti-square" aria-hidden="true" /> Stop and process</button>
                   </div>
                 )}
-                {!recording && !loading && (
-                  <button className="t-btn t-btn-red" onClick={startRecording}>
-                    <i className="ti ti-circle" aria-hidden="true" /> Start recording
-                  </button>
-                )}
+                {!recording && !loading && <button className="t-btn t-btn-red" onClick={startRecording}><i className="ti ti-circle" aria-hidden="true" /> Start recording</button>}
                 {loading && !recording && <div className="t-dot-row"><span className="t-dot t-dot-active" /><span>{status}</span></div>}
                 {dot === 'warn' && !loading && !recording && <div className="t-dot-row"><span className="t-dot t-dot-warn" /><span>{status}</span></div>}
               </>
@@ -467,11 +427,14 @@ export default function MeetingPage() {
   )
 }
 
+function buildWaUrl(phone, text) {
+  if (phone) { const num = phone.replace(/\D/g, ''); return `https://wa.me/${num}?text=${encodeURIComponent(text)}` }
+  return `https://wa.me/?text=${encodeURIComponent(text)}`
+}
+
 function toast(msg, type = 'info') {
   let el = document.getElementById('t-toast')
   if (!el) { el = document.createElement('div'); el.id = 't-toast'; document.body.appendChild(el) }
-  el.textContent = msg
-  el.className = type === 'error' ? 'error' : type === 'success' ? 'success' : ''
-  el.classList.add('show')
-  clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove('show'), 3000)
+  el.textContent = msg; el.className = type === 'error' ? 'error' : type === 'success' ? 'success' : ''
+  el.classList.add('show'); clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove('show'), 3000)
 }
