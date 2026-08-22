@@ -11,6 +11,11 @@ from app.schemas.contacts import CardExtraction
 
 genai.configure(api_key=settings.GEMINI_API_KEY)
 
+# Models
+_AGENT_MODEL  = 'gemini-2.0-flash'   # supports Google Search grounding
+_VISION_MODEL = settings.GEMINI_VISION_MODEL if hasattr(settings, 'GEMINI_VISION_MODEL') else 'gemini-2.0-flash'
+_FAST_MODEL   = settings.GEMINI_MODEL  # gemini-3.1-flash-lite for cheap tasks
+
 
 def _extract_json(text: str) -> dict:
     cleaned = re.sub(r'^```(?:json)?|```$', '', text.strip(), flags=re.MULTILINE).strip()
@@ -20,13 +25,12 @@ def _extract_json(text: str) -> dict:
     return json.loads(cleaned)
 
 
-async def _generate(prompt_parts, model_name: str | None = None, temperature: float = 0.2) -> str:
-    model = genai.GenerativeModel(model_name or settings.GEMINI_MODEL)
-    response = await asyncio.to_thread(
-        model.generate_content,
-        prompt_parts,
-        generation_config={'temperature': temperature, 'max_output_tokens': 1400},
-    )
+async def _generate(prompt_parts, model_name: str | None = None, temperature: float = 0.2, tools=None) -> str:
+    model = genai.GenerativeModel(model_name or _FAST_MODEL)
+    kwargs = {'generation_config': {'temperature': temperature, 'max_output_tokens': 1400}}
+    if tools:
+        kwargs['tools'] = tools
+    response = await asyncio.to_thread(model.generate_content, prompt_parts, **kwargs)
     if not getattr(response, 'text', None):
         raise RuntimeError('AI returned an empty response')
     return response.text
@@ -36,7 +40,7 @@ async def extract_business_card(image_bytes: bytes, mime_type='image/jpeg') -> d
     schema = CardExtraction.model_json_schema()
     prompt = f'''Extract business-card contact information. Return ONLY valid JSON matching this schema:\n{json.dumps(schema)}\nUse null when unknown. Do not invent data.'''
     image_part = {'inline_data': {'mime_type': mime_type, 'data': base64.b64encode(image_bytes).decode()}}
-    raw = await _generate([prompt, image_part], settings.GEMINI_VISION_MODEL, 0.0)
+    raw = await _generate([prompt, image_part], _VISION_MODEL, 0.0)
     return CardExtraction.model_validate(_extract_json(raw)).model_dump(mode='json')
 
 
@@ -53,13 +57,7 @@ async def draft_email(contact: dict, user_instruction: str, user_name: str | Non
 async def transcribe_and_generate_mom(audio_bytes: bytes, mime_type: str, meeting_title: str | None = None) -> dict:
     """Send audio directly to Gemini — transcribes + generates MOM in one call."""
     if not audio_bytes:
-        return {
-            'transcript': '',
-            'summary': 'No audio provided.',
-            'mom_markdown': '',
-            'decisions': [],
-            'action_items': [],
-        }
+        return {'transcript': '', 'summary': 'No audio provided.', 'mom_markdown': '', 'decisions': [], 'action_items': []}
 
     prompt = f'''You are analyzing a meeting recording.
 Title: {meeting_title or 'Meeting'}
@@ -69,24 +67,21 @@ Do two things:
 2. Analyze the transcript and generate meeting minutes
 
 Return ONLY valid JSON with these keys:
-- transcript (string): full transcription of the audio
-- summary (string): 2-3 sentence summary of the meeting
-- mom_markdown (string): full minutes of meeting in markdown format
-- decisions (array of strings): key decisions made, empty array if none
-- action_items (array of objects): each with task, owner, due fields. Empty array if none.
+- transcript (string): full transcription
+- summary (string): 2-3 sentence summary
+- mom_markdown (string): full minutes in markdown
+- decisions (array of strings): key decisions, empty if none
+- action_items (array of objects with task, owner, due):
+  IMPORTANT: Only set owner if the transcript EXPLICITLY assigns the task using words like
+  "will", "should", "needs to", "is responsible for". If a name is merely mentioned in
+  context, do NOT set them as owner. Default owner to "Me" if unclear.
 
-If audio is too short or unclear, still return valid JSON with whatever you could capture.
 Never invent content that was not said.'''
 
-    audio_part = {
-        'inline_data': {
-            'mime_type': mime_type,
-            'data': base64.b64encode(audio_bytes).decode()
-        }
-    }
+    audio_part = {'inline_data': {'mime_type': mime_type, 'data': base64.b64encode(audio_bytes).decode()}}
 
     try:
-        model = genai.GenerativeModel(settings.GEMINI_MODEL)
+        model = genai.GenerativeModel(_AGENT_MODEL)
         response = await asyncio.to_thread(
             model.generate_content,
             [prompt, audio_part],
@@ -119,7 +114,7 @@ async def generate_mom(transcript: str, meeting_title: str | None = None) -> dic
         return {'summary': 'No speech detected.', 'mom_markdown': '', 'decisions': [], 'action_items': []}
     if len(transcript) > 180_000:
         transcript = transcript[:180_000]
-    prompt = f'''Analyze this meeting transcript and return ONLY JSON with keys: summary (string), mom_markdown (string), decisions (array of strings), action_items (array of objects with task, owner, due). Never invent decisions or action items.\nTitle: {meeting_title or 'Meeting'}\nTranscript:\n{transcript}'''
+    prompt = f'''Analyze this meeting transcript and return ONLY JSON with keys: summary, mom_markdown, decisions (array), action_items (array with task/owner/due). Only assign owner if explicitly stated.\nTitle: {meeting_title or 'Meeting'}\nTranscript:\n{transcript}'''
     try:
         data = _extract_json(await _generate(prompt, temperature=0.1))
     except Exception:
@@ -134,32 +129,57 @@ async def generate_mom(transcript: str, meeting_title: str | None = None) -> dic
 
 async def plan_agent(message: str, history: list[dict], context: dict) -> AgentPlan:
     schema = AgentPlan.model_json_schema()
-    prompt = f'''You are Tiby, a smart AI personal assistant. Return ONLY valid JSON matching this schema:\n{json.dumps(schema)}
+    prompt = f'''You are Tiby, a smart AI personal assistant with access to Google Search.
+Return ONLY valid JSON matching this schema:\n{json.dumps(schema)}
 
-Allowed action types: navigate, add_task, complete_task, add_contact, update_contact.
+Allowed action types: navigate, add_task, complete_task, add_contact, update_contact, call_contact, whatsapp_contact, email_contact.
 Allowed navigation routes: /scan, /meetings, /contacts, /analytics, /settings.
 
 RULES:
+- You have Google Search available — use it automatically when the user asks about current events, news, prices, weather, facts, or anything requiring up-to-date information. Search first, then answer based on results.
 - Never claim an action succeeded unless you include the action so the server can execute it.
 - For questions, advice, planning, or general chat — answer fully in the reply field with NO actions.
-- For trip planning, travel advice, recommendations — give a detailed helpful answer in reply. Do NOT add tasks unless the user explicitly asks to.
+- For trip planning, travel, recommendations — search the web and give a detailed helpful answer in reply.
 - Only add tasks when the user explicitly says "add task", "remind me", "create a task", or similar.
-- Use add_contact when user says "add contact", "save contact", "add [name] to my contacts", or gives contact details explicitly. Extract name, email, phone, company, role from what they say.
-- Use update_contact when user wants to update a field on an EXISTING contact (e.g. "add his number", "update Rahul's email"). Set text to the contact name to find, and only set the fields being updated.
+- Use add_contact when user says "add contact", "save contact", or gives contact details explicitly.
+- Use update_contact when user wants to update a field on an EXISTING contact. Set text to the contact name.
+- Use call_contact when user says "call [name]" or "ring [name]". Set contact_name to the person's name.
+- Use whatsapp_contact when user says "whatsapp [name]", "message [name] on whatsapp", or "send [name] a message". Set contact_name and optionally message.
+- Use email_contact when user says "email [name]" or "send [name] an email". Set contact_name and optionally title (subject) and message (body).
 - NEVER create a new contact if one already exists with the same name — use update_contact instead.
-- When asked about a contact's details, check the context carefully — phone, email, company, role are ALL provided. Never say a field is missing if it's in the context.
+- When asked about a contact's details, check context carefully — phone, email, company, role are ALL provided.
 - Only navigate when the user explicitly asks to go somewhere in the app.
 - Never invent urgency, deadlines, or priorities not mentioned by the user.
-- Be conversational, warm, and genuinely helpful — not robotic.
+- Be conversational, warm, and genuinely helpful.
 
 User context: {json.dumps(context, default=str)[:12000]}
 Conversation: {json.dumps(history[-20:], default=str)[:20000]}
 User message: {message}'''
-    raw = await _generate(prompt, temperature=0.3)
+
+    # Use gemini-2.0-flash with Google Search grounding
+    try:
+        model = genai.GenerativeModel(_AGENT_MODEL)
+        google_search_tool = genai.protos.Tool(
+            google_search=genai.protos.GoogleSearch()
+        )
+        response = await asyncio.to_thread(
+            model.generate_content,
+            prompt,
+            tools=[google_search_tool],
+            generation_config={'temperature': 0.3, 'max_output_tokens': 2000},
+        )
+        raw = getattr(response, 'text', '') or ''
+        if not raw.strip():
+            raise ValueError('Empty agent response')
+    except Exception:
+        # Fallback to fast model without search if grounding fails
+        raw = await _generate(prompt, _FAST_MODEL, temperature=0.3)
+
     try:
         plan = AgentPlan.model_validate(_extract_json(raw))
     except (ValidationError, json.JSONDecodeError) as exc:
         raise RuntimeError('AI returned an invalid agent plan') from exc
+
     for action in plan.actions:
         if action.type == 'navigate' and action.route not in {'/scan', '/meetings', '/contacts', '/analytics', '/settings'}:
             action.route = None
@@ -187,7 +207,7 @@ Tasks: {json.dumps(tasks, default=str)}'''
 
 
 async def generate_eod_summary(tasks: list[dict]) -> dict:
-    prompt = f'''Create an end-of-day review from the user's tasks. Return ONLY JSON with today_summary and tomorrow_plan. Be concise, factual, and do not claim work happened unless a task is marked done. Tasks: {json.dumps(tasks, default=str)}'''
+    prompt = f'''Create an end-of-day review from the user's tasks. Return ONLY JSON with today_summary and tomorrow_plan. Be concise, factual, do not claim work happened unless a task is marked done. Tasks: {json.dumps(tasks, default=str)}'''
     data = _extract_json(await _generate(prompt, temperature=0.2))
     return {
         'today_summary': str(data.get('today_summary') or ''),
@@ -198,4 +218,4 @@ async def generate_eod_summary(tasks: list[dict]) -> dict:
 async def extract_handwritten_notes(image_bytes: bytes, mime_type='image/jpeg') -> str:
     image_part = {'inline_data': {'mime_type': mime_type, 'data': base64.b64encode(image_bytes).decode()}}
     prompt = 'Transcribe these handwritten or printed meeting notes faithfully. Return plain text only. Do not add information that is not visible.'
-    return (await _generate([prompt, image_part], settings.GEMINI_VISION_MODEL, 0.0)).strip()
+    return (await _generate([prompt, image_part], _VISION_MODEL, 0.0)).strip()
