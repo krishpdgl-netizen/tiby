@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from urllib.parse import quote
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -151,7 +152,7 @@ async def chat(req: AgentChatRequest, user: CurrentUser, db: AsyncSession = Depe
                 if c and c.phone:
                     num = c.phone.replace('+', '').replace(' ', '').replace('-', '')
                     msg = action.message or ''
-                    url = f'https://wa.me/{num}?text={__import__("urllib.parse", fromlist=["quote"]).parse.quote(msg)}' if msg else f'https://wa.me/{num}'
+                    url = f'https://wa.me/{num}?text={quote(msg)}' if msg else f'https://wa.me/{num}'
                     result = {'ok': True, 'action': 'whatsapp', 'name': c.name, 'phone': c.phone, 'url': url}
                 else:
                     result = {'ok': False, 'reason': f'No phone number for {action.contact_name}'}
@@ -161,9 +162,10 @@ async def chat(req: AgentChatRequest, user: CurrentUser, db: AsyncSession = Depe
                 if c and c.email:
                     subject = action.title or ''
                     body = action.message or ''
-                    url = f'mailto:{c.email}'
-                    if subject: url += f'?subject={__import__("urllib.parse", fromlist=["quote"]).parse.quote(subject)}'
-                    if body: url += f'&body={__import__("urllib.parse", fromlist=["quote"]).parse.quote(body)}' if subject else f'?body={__import__("urllib.parse", fromlist=["quote"]).parse.quote(body)}'
+                    parts = []
+                    if subject: parts.append(f'subject={quote(subject)}')
+                    if body: parts.append(f'body={quote(body)}')
+                    url = f'mailto:{c.email}' + (f'?{"&".join(parts)}' if parts else '')
                     result = {'ok': True, 'action': 'email', 'name': c.name, 'email': c.email, 'url': url}
                 else:
                     result = {'ok': False, 'reason': f'No email for {action.contact_name}'}
