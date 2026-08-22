@@ -8,7 +8,11 @@ class ChatMessage(BaseModel):
 
 
 class AgentAction(BaseModel):
-    type: Literal['navigate', 'add_task', 'complete_task', 'add_contact', 'update_contact']
+    type: Literal[
+        'navigate', 'add_task', 'complete_task',
+        'add_contact', 'update_contact',
+        'call_contact', 'whatsapp_contact', 'email_contact',
+    ]
     route: str | None = None
     # task fields
     title: str | None = None
@@ -21,6 +25,9 @@ class AgentAction(BaseModel):
     phone: str | None = None
     company: str | None = None
     role: str | None = None
+    # communication fields
+    contact_name: str | None = None   # who to call/whatsapp/email
+    message: str | None = None        # optional message body for whatsapp
 
 
 class AgentPlan(BaseModel):
