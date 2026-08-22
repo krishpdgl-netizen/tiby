@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { listContacts, deleteContact, confirmContact } from '../services/api'
+import { listContacts, deleteContact, confirmContact, getFollowups } from '../services/api'
 
 const COLORS = ['ti-amber', 'ti-blue', 'ti-green', 'ti-purple', 'ti-red']
 const EMPTY_FORM = { name: '', email: '', phone: '', company: '', role: '' }
@@ -14,6 +14,8 @@ export default function ContactsPage() {
   const [form, setForm]             = useState(EMPTY_FORM)
   const [saving, setSaving]         = useState(false)
   const [formErr, setFormErr]       = useState('')
+  const [followups, setFollowups]   = useState([])
+  const [showFollowups, setShowFollowups] = useState(true)
 
   useEffect(() => { load() }, [])
 
@@ -28,8 +30,11 @@ export default function ContactsPage() {
 
   async function load() {
     setLoading(true)
-    try { const { data } = await listContacts(); setContacts(data || []) }
-    catch { setContacts([]) }
+    try {
+      const [cRes, fRes] = await Promise.all([listContacts(), getFollowups().catch(() => ({ data: [] }))])
+      setContacts(cRes.data || [])
+      setFollowups(fRes.data || [])
+    } catch { setContacts([]) }
     finally { setLoading(false) }
   }
 
@@ -39,6 +44,7 @@ export default function ContactsPage() {
     try {
       await deleteContact(id)
       setContacts(prev => prev.filter(c => c.id !== id))
+      setFollowups(prev => prev.filter(f => f.id !== id))
       if (selectedId === id) setSelectedId(null)
     } catch {}
   }
@@ -50,8 +56,7 @@ export default function ContactsPage() {
     try {
       const { data } = await confirmContact(form, null, {})
       setContacts(prev => [data.contact, ...prev])
-      setForm(EMPTY_FORM)
-      setShowForm(false)
+      setForm(EMPTY_FORM); setShowForm(false)
     } catch (err) {
       setFormErr(err?.response?.data?.detail || 'Failed to save contact')
     } finally { setSaving(false) }
@@ -76,7 +81,7 @@ export default function ContactsPage() {
   return (
     <div className="t-content" style={{ paddingTop: 16 }}>
 
-      {/* Search + Add button */}
+      {/* Search + Add */}
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
         <div className="t-search-wrap" style={{ flex: 1 }}>
           <i className="ti ti-search" aria-hidden="true" />
@@ -96,23 +101,18 @@ export default function ContactsPage() {
         <div className="t-card">
           <div className="t-card-head">
             <div className="t-icon ti-blue"><i className="ti ti-user-plus" aria-hidden="true" /></div>
-            <div>
-              <div className="t-ct">Add contact</div>
-              <div className="t-cs">Fill in the details manually</div>
-            </div>
+            <div><div className="t-ct">Add contact</div><div className="t-cs">Fill in the details manually</div></div>
           </div>
           <form onSubmit={handleSave} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {[
-              ['Full name *', 'name',    'text', 'Rahul Sharma'],
-              ['Email',       'email',   'email','rahul@company.com'],
-              ['Phone',       'phone',   'tel',  '+91 98765 43210'],
-              ['Company',     'company', 'text', 'Acme Corp'],
-              ['Role',        'role',    'text', 'Sales Manager'],
+              ['Full name *', 'name', 'text', 'Rahul Sharma'],
+              ['Email', 'email', 'email', 'rahul@company.com'],
+              ['Phone', 'phone', 'tel', '+91 98765 43210'],
+              ['Company', 'company', 'text', 'Acme Corp'],
+              ['Role', 'role', 'text', 'Sales Manager'],
             ].map(([label, key, type, ph]) => (
               <div key={key}>
-                <label style={{ fontSize: 11, fontWeight: 600, color: '#6b7280', display: 'block', marginBottom: 3, textTransform: 'uppercase', letterSpacing: '.3px' }}>
-                  {label}
-                </label>
+                <label style={{ fontSize: 11, fontWeight: 600, color: '#6b7280', display: 'block', marginBottom: 3, textTransform: 'uppercase', letterSpacing: '.3px' }}>{label}</label>
                 <input className="t-input" type={type} placeholder={ph}
                   value={form[key]} onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))} />
               </div>
@@ -122,6 +122,38 @@ export default function ContactsPage() {
               {saving ? 'Saving…' : 'Save contact'}
             </button>
           </form>
+        </div>
+      )}
+
+      {/* Follow-up nudges */}
+      {!search && followups.length > 0 && showFollowups && (
+        <div className="t-card" style={{ border: '1px solid #fde68a', background: '#fffbeb' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+            <i className="ti ti-bell" style={{ fontSize: 18, color: '#92400e' }} aria-hidden="true" />
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: '#1a1a1a' }}>Follow-up reminders</div>
+              <div style={{ fontSize: 12, color: '#6b7280' }}>{followups.length} contact{followups.length !== 1 ? 's' : ''} waiting</div>
+            </div>
+            <button onClick={() => setShowFollowups(false)}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af', fontSize: 16, padding: 2 }}>
+              <i className="ti ti-x" aria-hidden="true" />
+            </button>
+          </div>
+          {followups.slice(0, 3).map(f => (
+            <div key={f.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderTop: '1px solid #fde68a' }}>
+              <div style={{ width: 32, height: 32, borderRadius: '50%', background: '#fef3c7', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 600, color: '#92400e', flexShrink: 0 }}>
+                {initials(f.name)}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</div>
+                <div style={{ fontSize: 12, color: '#92400e' }}>{f.reason}</div>
+              </div>
+              <a href={`mailto:${f.email}`}
+                style={{ fontSize: 12, color: '#1e40af', fontWeight: 600, textDecoration: 'none', flexShrink: 0, padding: '4px 10px', border: '1px solid #93c5fd', borderRadius: 8 }}>
+                Email
+              </a>
+            </div>
+          ))}
         </div>
       )}
 
@@ -169,13 +201,14 @@ export default function ContactsPage() {
               <div key={c.id} className="t-row" onClick={() => setSelectedId(selectedId === c.id ? null : c.id)} style={{ cursor: 'pointer' }}>
                 <div className={`t-row-av ${colorFor(i)}`}>{initials(c.name)}</div>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div className="t-row-name" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {c.name || 'Unknown'}
-                  </div>
+                  <div className="t-row-name" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name || 'Unknown'}</div>
                   <div className="t-row-sub" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {[c.company, c.role].filter(Boolean).join(' · ') || c.email || 'No details'}
                   </div>
                 </div>
+                {followups.some(f => f.id === c.id) && (
+                  <i className="ti ti-bell" style={{ fontSize: 14, color: '#f59e0b', flexShrink: 0, marginRight: 4 }} aria-hidden="true" />
+                )}
                 <button onClick={e => handleDelete(c.id, e)}
                   style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#d1d5db', fontSize: 16, padding: 4, flexShrink: 0 }}>
                   <i className="ti ti-trash" aria-hidden="true" />
@@ -198,8 +231,8 @@ export default function ContactsPage() {
               </div>
               {[
                 ['Company', selectedContact.company],
-                ['Email',   selectedContact.email],
-                ['Phone',   selectedContact.phone],
+                ['Email', selectedContact.email],
+                ['Phone', selectedContact.phone],
                 ['Website', selectedContact.website],
               ].filter(([, v]) => v).map(([l, v]) => (
                 <div key={l} style={{ display: 'flex', gap: 10, padding: '6px 0', borderBottom: '1px solid #f0f0ef', fontSize: 13 }}>
@@ -208,10 +241,18 @@ export default function ContactsPage() {
                 </div>
               ))}
               {selectedContact.email && (
-                <a href={`mailto:${selectedContact.email}`}
-                  className="t-btn t-btn-primary" style={{ marginTop: 12, textDecoration: 'none', display: 'flex' }}>
-                  <i className="ti ti-mail" aria-hidden="true" /> Send email
-                </a>
+                <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                  <a href={`mailto:${selectedContact.email}`}
+                    className="t-btn t-btn-primary" style={{ flex: 1, textDecoration: 'none', display: 'flex', justifyContent: 'center' }}>
+                    <i className="ti ti-mail" aria-hidden="true" /> Email
+                  </a>
+                  {selectedContact.phone && (
+                    <a href={`https://wa.me/${selectedContact.phone.replace(/\D/g, '')}`} target="_blank" rel="noopener noreferrer"
+                      className="t-btn t-btn-green" style={{ flex: 1, textDecoration: 'none', display: 'flex', justifyContent: 'center' }}>
+                      <i className="ti ti-brand-whatsapp" aria-hidden="true" /> WhatsApp
+                    </a>
+                  )}
+                </div>
               )}
             </div>
           )}
