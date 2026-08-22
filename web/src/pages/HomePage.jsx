@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useSpeech } from '../hooks/useSpeech'
-import { agentChat, transcribeVoice } from '../services/api'
+import { agentChat, transcribeVoice, bustCache } from '../services/api'
 
 const STORAGE_KEY = 'tiby_chat_history'
 const QUICK_ACTIONS = [
@@ -72,6 +72,10 @@ export default function HomePage({ user }) {
           const msg = text.toLowerCase()
           const navWords = ['go to', 'open', 'take me', 'navigate', 'show me', 'switch to']
           if (navWords.some(w => msg.includes(w))) setTimeout(() => navigate(action.route), 700)
+        }
+        // Bust contacts cache when bot updates/adds a contact
+        if (['add_contact', 'update_contact'].includes(action.type) && action.ok) {
+          bustCache('contacts')
         }
         // For call/whatsapp/email — add a tappable action card to the chat
         if (['call_contact', 'whatsapp_contact', 'email_contact'].includes(action.type) && action.url) {
