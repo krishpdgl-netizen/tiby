@@ -48,8 +48,8 @@ export default function HomePage({ user }) {
     if (!thinking && !recording) inputRef.current?.focus()
   }, [messages, thinking, recording])
 
-  function addMsg(role, text, type = 'text') {
-    setMessages(m => [...m, { id: Date.now() + Math.random(), role, text, type }])
+  function addMsg(role, text, type = 'text', url = null) {
+    setMessages(m => [...m, { id: Date.now() + Math.random(), role, text, type, url }])
   }
 
   function serverHistory() {
@@ -73,9 +73,11 @@ export default function HomePage({ user }) {
           const navWords = ['go to', 'open', 'take me', 'navigate', 'show me', 'switch to']
           if (navWords.some(w => msg.includes(w))) setTimeout(() => navigate(action.route), 700)
         }
-        // Open deep links for call/whatsapp/email actions
+        // For call/whatsapp/email — add a tappable action card to the chat
         if (['call_contact', 'whatsapp_contact', 'email_contact'].includes(action.type) && action.url) {
-          setTimeout(() => window.open(action.url, '_blank'), 300)
+          const icons = { call_contact: '📞', whatsapp_contact: '💬', email_contact: '✉️' }
+          const labels = { call_contact: `Call ${action.name}`, whatsapp_contact: `Open WhatsApp — ${action.name}`, email_contact: `Email ${action.name}` }
+          addMsg('action_link', labels[action.type] || 'Open', 'action_link', action.url)
         }
       }
       speak((data.reply || 'Done.').slice(0, 200))
@@ -149,9 +151,17 @@ export default function HomePage({ user }) {
                   {(user?.user_metadata?.full_name?.[0] || user?.email?.[0] || 'U').toUpperCase()}
                 </div>
               )}
-              <div className="t-bubble" style={{ maxWidth: 'calc(100% - 48px)', wordBreak: 'break-word' }}>
-                {msg.text}
-              </div>
+              {msg.type === 'action_link' ? (
+                <a href={msg.url} target="_blank" rel="noopener noreferrer"
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '10px 16px', background: '#1a1a1a', color: '#fff', borderRadius: '4px 14px 14px 14px', textDecoration: 'none', fontSize: 14, fontWeight: 600, maxWidth: 'calc(100% - 48px)' }}>
+                  {msg.text}
+                  <i className="ti ti-arrow-right" style={{ fontSize: 14 }} aria-hidden="true" />
+                </a>
+              ) : (
+                <div className="t-bubble" style={{ maxWidth: 'calc(100% - 48px)', wordBreak: 'break-word' }}>
+                  {msg.text}
+                </div>
+              )}
             </div>
             {msg.type === 'actions' && (
               <div style={{ marginLeft: 40, marginTop: 10 }}>
