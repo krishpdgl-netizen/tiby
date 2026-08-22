@@ -13,9 +13,7 @@ api.interceptors.request.use(async config => {
 api.interceptors.response.use(
   r => r,
   async error => {
-    if (error?.response?.status === 401) {
-      await supabase.auth.refreshSession().catch(() => {})
-    }
+    if (error?.response?.status === 401) await supabase.auth.refreshSession().catch(() => {})
     return Promise.reject(error)
   }
 )
@@ -43,6 +41,7 @@ export const completeTask        = id => api.patch(`/tasks/${id}/complete`)
 export const reopenTask          = id => api.patch(`/tasks/${id}/reopen`)
 export const transcribeVoice     = blob => { const f = new FormData(); f.append('file', blob, 'voice.webm'); return api.post('/voice/transcribe', f) }
 export const getAnalytics        = () => api.get('/analytics/summary')
+export const getFollowups        = () => api.get('/analytics/followups')
 export const prioritizeTasks     = () => api.post('/analytics/prioritize')
 export const generateEOD         = () => api.post('/analytics/eod')
 export const getProfile          = () => api.get('/profile/')
