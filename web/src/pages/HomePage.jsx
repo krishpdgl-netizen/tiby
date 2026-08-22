@@ -67,10 +67,15 @@ export default function HomePage({ user }) {
       const { data } = await agentChat(text, history)
       addMsg('tiby', data.reply || 'Done.')
       for (const action of data.actions || []) {
-        if (action.type === 'navigate' && action.ok && action.route) {
+        if (!action.ok) continue
+        if (action.type === 'navigate' && action.route) {
           const msg = text.toLowerCase()
           const navWords = ['go to', 'open', 'take me', 'navigate', 'show me', 'switch to']
           if (navWords.some(w => msg.includes(w))) setTimeout(() => navigate(action.route), 700)
+        }
+        // Open deep links for call/whatsapp/email actions
+        if (['call_contact', 'whatsapp_contact', 'email_contact'].includes(action.type) && action.url) {
+          setTimeout(() => window.open(action.url, '_blank'), 300)
         }
       }
       speak((data.reply || 'Done.').slice(0, 200))
