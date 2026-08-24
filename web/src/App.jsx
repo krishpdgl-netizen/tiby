@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { BrowserRouter, Routes, Route, NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { Toaster } from 'react-hot-toast'
 
@@ -9,6 +9,7 @@ import MeetingPage     from './pages/MeetingPage'
 import ContactsPage    from './pages/ContactsPage'
 import AnalyticsPage   from './pages/AnalyticsPage'
 import SettingsPage    from './pages/SettingsPage'
+import SearchPage      from './pages/SearchPage'
 import WakeWordOverlay from './components/WakeWordOverlay'
 import { useWakeWord }   from './hooks/useWakeWord'
 import { usePWAInstall } from './hooks/usePWAInstall'
@@ -20,8 +21,10 @@ const NAV = [
   { to: '/meetings',  icon: 'ti-microphone', label: 'Meetings' },
   { to: '/contacts',  icon: 'ti-users',      label: 'Contacts' },
   { to: '/analytics', icon: 'ti-chart-bar',  label: 'Tasks' },
+  { to: '/search',    icon: 'ti-search',     label: 'Search' },
   { to: '/settings',  icon: 'ti-settings',   label: 'Settings' },
 ]
+
 
 const PAGE_META = {
   '/home':      { icon: 'ti-home',       bg: '#f5f5f4', color: '#6b7280', title: 'Home',        sub: 'Ask Tiby anything' },
@@ -30,13 +33,17 @@ const PAGE_META = {
   '/contacts':  { icon: 'ti-users',      bg: '#dbeafe', color: '#1e40af', title: 'Contacts',     sub: 'Your saved contacts' },
   '/analytics': { icon: 'ti-chart-bar',  bg: '#ede9fe', color: '#5b21b6', title: 'Dashboard',    sub: 'Tasks + analytics' },
   '/settings':  { icon: 'ti-settings',   bg: '#f5f5f4', color: '#6b7280', title: 'Settings',     sub: 'Account and preferences' },
+  '/search':    { icon: 'ti-search',     bg: '#f0fdf4', color: '#065f46', title: 'Search',       sub: 'Find anything in Tiby' },
 }
+
+const HOME_PATHS = new Set(['/', '/home'])
 
 function AppInner({ user }) {
   const [overlayOpen, setOverlayOpen] = useState(false)
   const { canInstall, isInstalled, install } = usePWAInstall()
-  const navigate = useNavigate()
-  const location = useLocation()
+  const navigate  = useNavigate()
+  const location  = useLocation()
+  const lastBackRef = useRef(0)
 
   const handleWake    = useCallback(() => setOverlayOpen(true), [])
   const handleCommand = useCallback((t) => {
@@ -44,11 +51,46 @@ function AppInner({ user }) {
     navigate('/home', { state: { voiceCommand: t } })
   }, [navigate])
 
-  const { isListening, wakeDetected } = useWakeWord({ onWake: handleWake, enabled: false })
+  useWakeWord({ onWake: handleWake, enabled: false })
+
+  // ── Double-back-to-exit on Android PWA ───────────────────────────────────
+  useEffect(() => {
+    function onPopState() {
+      const now = Date.now()
+      const isHome = HOME_PATHS.has(location.pathname)
+
+      if (isHome) {
+        // On home screen — double press exits
+        if (now - lastBackRef.current < 2000) {
+          // Second press within 2s — close the app
+          window.history.pushState(null, '', window.location.href)
+          if (navigator.app?.exitApp) {
+            navigator.app.exitApp()
+          } else {
+            // PWA fallback — move app to background on Android
+            window.close()
+          }
+        } else {
+          // First press — show toast hint and push state to catch next press
+          lastBackRef.current = now
+          window.history.pushState(null, '', window.location.href)
+          showExitToast()
+        }
+      } else {
+        // Not on home — go home instead of back
+        navigate('/home', { replace: true })
+      }
+    }
+
+    // Push a state so we can catch popstate
+    window.history.pushState(null, '', window.location.href)
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [location.pathname, navigate])
 
   const path   = location.pathname
   const meta   = PAGE_META[path] || PAGE_META['/home']
-  const isHome = path === '/home' || path === '/'
+  const isHome = HOME_PATHS.has(path)
 
   function initials(u) {
     const n = u?.user_metadata?.full_name || u?.email || 'U'
@@ -60,7 +102,9 @@ function AppInner({ user }) {
       <aside className="tiby-sidebar">
         <div className="t-logo">T</div>
         {NAV.map(({ to, icon, label }) => (
-          <NavLink key={to} to={to} className={({ isActive }) => `t-nav-item ${isActive ? 'active' : ''}`} title={label}>
+          <NavLink key={to} to={to}
+            className={({ isActive }) => `t-nav-item ${isActive ? 'active' : ''}`}
+            title={label}>
             <i className={`ti ${icon}`} aria-hidden="true" />
           </NavLink>
         ))}
@@ -106,6 +150,7 @@ function AppInner({ user }) {
             <Route path="/meetings"  element={<MeetingPage />} />
             <Route path="/contacts"  element={<ContactsPage />} />
             <Route path="/analytics" element={<AnalyticsPage />} />
+            <Route path="/search"    element={<SearchPage />} />
             <Route path="/settings"  element={<SettingsPage user={user} />} />
           </Routes>
         </div>
@@ -120,10 +165,32 @@ function AppInner({ user }) {
         </nav>
       </div>
 
-      {overlayOpen && <WakeWordOverlay onCommand={handleCommand} onDismiss={() => setOverlayOpen(false)} />}
+      {overlayOpen && (
+        <WakeWordOverlay onCommand={handleCommand} onDismiss={() => setOverlayOpen(false)} />
+      )}
       <Toaster position="top-center" />
     </div>
   )
+}
+
+// Toast for "press back again to exit"
+function showExitToast() {
+  let el = document.getElementById('t-exit-toast')
+  if (!el) {
+    el = document.createElement('div')
+    el.id = 't-exit-toast'
+    el.style.cssText = `
+      position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
+      background: #1a1a1a; color: #fff; padding: 10px 20px; border-radius: 20px;
+      font-size: 13px; font-family: inherit; z-index: 9999;
+      opacity: 0; transition: opacity .2s; pointer-events: none;
+    `
+    document.body.appendChild(el)
+  }
+  el.textContent = 'Press back again to exit'
+  el.style.opacity = '1'
+  clearTimeout(el._t)
+  el._t = setTimeout(() => { el.style.opacity = '0' }, 1800)
 }
 
 export default function App() {
@@ -135,7 +202,6 @@ export default function App() {
       setUser(session?.user ?? null)
       setReady(true)
     })
-
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_, session) => {
       setUser(session?.user ?? null)
     })
@@ -143,10 +209,10 @@ export default function App() {
   }, [])
 
   if (!ready) return (
-    <div style={{ height:'100dvh', display:'flex', alignItems:'center', justifyContent:'center', background:'#f9f9f8' }}>
-      <div style={{ textAlign:'center' }}>
-        <div style={{ width:44, height:44, borderRadius:12, background:'#1a1a1a', display:'flex', alignItems:'center', justifyContent:'center', fontSize:19, fontWeight:600, color:'#fff', margin:'0 auto 12px' }}>T</div>
-        <div style={{ fontSize:13, color:'#9ca3af' }}>Loading…</div>
+    <div style={{ height: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f9f9f8' }}>
+      <div style={{ textAlign: 'center' }}>
+        <div style={{ width: 44, height: 44, borderRadius: 12, background: '#1a1a1a', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 19, fontWeight: 600, color: '#fff', margin: '0 auto 12px' }}>T</div>
+        <div style={{ fontSize: 13, color: '#9ca3af' }}>Loading…</div>
       </div>
     </div>
   )
