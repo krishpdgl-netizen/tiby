@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <!-- No background — transparent, works on any color -->
+  <!-- Top-right petal -->
+  <path d="M256,105 C316,105 407,196 407,256 C330,256 256,216 256,105Z" fill="none" stroke="#1a1a1a" stroke-width="12" stroke-linejoin="round"/>
+  <!-- Top-left petal -->
+  <path d="M256,105 C196,105 105,196 105,256 C182,256 256,216 256,105Z" fill="none" stroke="#1a1a1a" stroke-width="12" stroke-linejoin="round"/>
+  <!-- Bottom-right petal -->
+  <path d="M256,407 C316,407 407,316 407,256 C330,256 256,296 256,407Z" fill="none" stroke="#1a1a1a" stroke-width="12" stroke-linejoin="round"/>
+  <!-- Bottom-left petal -->
+  <path d="M256,407 C196,407 105,316 105,256 C182,256 256,296 256,407Z" fill="none" stroke="#1a1a1a" stroke-width="12" stroke-linejoin="round"/>
+  <!-- Center diamond -->
+  <rect x="214" y="214" width="84" height="84" rx="6" fill="none" stroke="#1a1a1a" stroke-width="10" transform="rotate(45 256 256)"/>
+</svg>
