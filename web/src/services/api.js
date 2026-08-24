@@ -48,6 +48,7 @@ export const confirmContact      = async (extracted, imagePath, edits = {}) => {
 }
 export const listContacts        = () => _cached('contacts', () => api.get('/contacts/'), _TTL.contacts)
 export const getContact          = id => api.get(`/contacts/${id}`)
+export const updateContact       = async (id, data) => { const r = await api.patch(`/contacts/${id}`, data); _bust('contacts'); return r }
 export const deleteContact       = async id => { const r = await api.delete(`/contacts/${id}`); _bust('contacts'); return r }
 
 export const draftEmail          = (contactId, voiceInstruction) => api.post('/emails/draft', { contact_id: contactId, voice_instruction: voiceInstruction })
@@ -83,7 +84,12 @@ export const getFollowups        = () => _cached('followups', () => api.get('/an
 export const prioritizeTasks     = () => api.post('/analytics/prioritize')
 export const generateEOD         = () => api.post('/analytics/eod')
 
+export const markMOMSent         = (meetingId, sentTo) => api.patch(`/meetings/${meetingId}/mark-sent`, { sent_to: sentTo })
 export const getProfile          = () => api.get('/profile/')
 export const updateProfile       = data => api.patch('/profile/', data)
+export const searchEverything    = q => api.get(`/search/?q=${encodeURIComponent(q)}`)
+export const searchMemory        = q => api.get(`/memory/search?q=${encodeURIComponent(q)}`)
+export const backfillMemory      = () => api.post('/memory/backfill')
+export const getContactTimeline  = id => api.get(`/contacts/${id}/timeline`)
 
 export default api
