@@ -2,6 +2,10 @@ import enum
 import uuid
 from datetime import datetime, timezone
 from sqlalchemy import String, Text, Boolean, DateTime, ForeignKey, JSON, Integer, Index
+try:
+    from pgvector.sqlalchemy import Vector
+except ImportError:
+    Vector = None
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
 from app.core.database import Base
@@ -135,3 +139,27 @@ class AgentStep(Base):
     status: Mapped[str] = mapped_column(String(50), default='completed')
 
     run: Mapped['AgentRun'] = relationship(back_populates='steps')
+
+
+class Memory(Base):
+    __tablename__ = 'memories'
+    __table_args__ = (
+        Index('ix_memories_user_created', 'user_id', 'created_at'),
+        Index('ix_memories_user_source', 'user_id', 'source_type'),
+        Index('ix_memories_user_contact', 'user_id', 'contact_id'),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'), index=True)
+    contact_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey('contacts.id', ondelete='SET NULL'), nullable=True)
+    meeting_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey('meetings.id', ondelete='CASCADE'), nullable=True)
+    email_log_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey('email_logs.id', ondelete='CASCADE'), nullable=True)
+    agent_run_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey('agent_runs.id', ondelete='CASCADE'), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    source_type: Mapped[str] = mapped_column(String(50), index=True)
+    source_id: Mapped[str | None] = mapped_column(String(100), index=True)
+    title: Mapped[str | None] = mapped_column(String(500))
+    content: Mapped[str] = mapped_column(Text)
+    metadata_json: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    importance: Mapped[int] = mapped_column(Integer, default=50)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(768) if Vector else JSON, nullable=True)
