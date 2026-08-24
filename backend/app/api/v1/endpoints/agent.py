@@ -10,6 +10,7 @@ from app.core.rate_limit import enforce_rate_limit
 from app.models.models import AgentRun, AgentStep, Contact, Task, User
 from app.schemas.agent import AgentChatRequest, AgentChatResponse
 from app.services.ai_service import plan_agent
+from app.services.memory_service import remember, semantic_memory_search
 
 router = APIRouter(prefix='/agent', tags=['agent'])
 
@@ -67,10 +68,16 @@ async def chat(req: AgentChatRequest, user: CurrentUser, db: AsyncSession = Depe
             .order_by(Task.created_at.desc()).limit(20)
         )
 
+        memory_context = await semantic_memory_search(db, user.id, req.message, 6)
+
         context = {
             'name': user.name,
             'email': user.email,
             'recent_contacts': all_contacts,
+            'relevant_memory': [
+                {'title': m.get('title'), 'content': m.get('snippet'), 'source': m.get('source_type')}
+                for m in memory_context
+            ],
             'open_tasks': [
                 {'id': str(t.id), 'title': t.title, 'due': t.due_date, 'owner': t.owner}
                 for t in tasks_result.scalars().all()
@@ -182,6 +189,19 @@ async def chat(req: AgentChatRequest, user: CurrentUser, db: AsyncSession = Depe
         run.final_response = plan.reply
         run.finished_at = datetime.now(timezone.utc)
         await db.commit()
+
+        # Store conversation in long-term memory
+        try:
+            await remember(
+                db, user_id=user.id, source_type='conversation',
+                source_id=str(run.id), agent_run_id=run.id,
+                title='Conversation with Tiby',
+                content=f'User: {req.message}\nTiby: {plan.reply}',
+                importance=45,
+            )
+            await db.commit()
+        except Exception:
+            pass
 
         return AgentChatResponse(run_id=str(run.id), reply=plan.reply, actions=outputs)
 
