@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     SUPABASE_ANON_KEY: str = ''
     SUPABASE_SERVICE_KEY: str = ''
 
+    # JWT verification — local (fast, no network call)
+    # Get from: Supabase Dashboard → Settings → API → JWT Keys → ⋮ → Copy public key
+    SUPABASE_JWT_PUBLIC_KEY: str = ''
+    # Legacy HS256 fallback (older Supabase projects)
+    SUPABASE_JWT_SECRET: str = ''
+
     # AI
     GEMINI_API_KEY: str = ''
     GEMINI_MODEL: str = 'gemini-3.1-flash-lite'
@@ -48,6 +54,10 @@ class Settings(BaseSettings):
     MAX_MEETING_BYTES: int = 250 * 1024 * 1024
 
     LOG_LEVEL: str = 'INFO'
+
+    # Memory / embeddings
+    GEMINI_EMBEDDING_MODEL: str = 'models/text-embedding-004'
+    MEMORY_EMBEDDING_DIMENSIONS: int = 768
 
     @property
     def allowed_origins_list(self) -> list[str]:
