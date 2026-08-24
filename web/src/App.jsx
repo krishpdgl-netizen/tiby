@@ -100,7 +100,13 @@ function AppInner({ user }) {
   return (
     <div className="tiby-shell">
       <aside className="tiby-sidebar">
-        <div className="t-logo">T</div>
+        <div className="t-logo"><svg width="20" height="20" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path d="M256,105 C316,105 407,196 407,256 C330,256 256,216 256,105Z" stroke="white" stroke-width="36" stroke-linejoin="round"/>
+  <path d="M256,105 C196,105 105,196 105,256 C182,256 256,216 256,105Z" stroke="white" stroke-width="36" stroke-linejoin="round"/>
+  <path d="M256,407 C316,407 407,316 407,256 C330,256 256,296 256,407Z" stroke="white" stroke-width="36" stroke-linejoin="round"/>
+  <path d="M256,407 C196,407 105,316 105,256 C182,256 256,296 256,407Z" stroke="white" stroke-width="36" stroke-linejoin="round"/>
+  <rect x="214" y="214" width="84" height="84" rx="6" stroke="white" stroke-width="30" transform="rotate(45 256 256)"/>
+</svg></div>
         {NAV.map(({ to, icon, label }) => (
           <NavLink key={to} to={to}
             className={({ isActive }) => `t-nav-item ${isActive ? 'active' : ''}`}
@@ -211,7 +217,13 @@ export default function App() {
   if (!ready) return (
     <div style={{ height: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f9f9f8' }}>
       <div style={{ textAlign: 'center' }}>
-        <div style={{ width: 44, height: 44, borderRadius: 12, background: '#1a1a1a', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 19, fontWeight: 600, color: '#fff', margin: '0 auto 12px' }}>T</div>
+        <div style={{ width: 60, height: 60, borderRadius: 16, background: '#0d0d0d', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 12px' }}><svg width="32" height="32" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path d="M256,105 C316,105 407,196 407,256 C330,256 256,216 256,105Z" stroke="white" stroke-width="36" stroke-linejoin="round"/>
+  <path d="M256,105 C196,105 105,196 105,256 C182,256 256,216 256,105Z" stroke="white" stroke-width="36" stroke-linejoin="round"/>
+  <path d="M256,407 C316,407 407,316 407,256 C330,256 256,296 256,407Z" stroke="white" stroke-width="36" stroke-linejoin="round"/>
+  <path d="M256,407 C196,407 105,316 105,256 C182,256 256,296 256,407Z" stroke="white" stroke-width="36" stroke-linejoin="round"/>
+  <rect x="214" y="214" width="84" height="84" rx="6" stroke="white" stroke-width="30" transform="rotate(45 256 256)"/>
+</svg></div>
         <div style={{ fontSize: 13, color: '#9ca3af' }}>Loading…</div>
       </div>
     </div>
