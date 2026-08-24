@@ -1,11 +1,13 @@
+import asyncio
 import logging
 import time
 import uuid
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.logging import configure_logging
-from app.api.v1.endpoints import agent, analytics, contacts, emails, meetings, tasks, voice, profile
+from app.api.v1.endpoints import agent, analytics, contacts, emails, meetings, tasks, voice, profile, memory, search
 
 configure_logging()
 log = logging.getLogger("tiby")
@@ -18,6 +20,7 @@ app = FastAPI(
     redoc_url=None,
 )
 
+# CORS must be FIRST
 _origins = settings.allowed_origins_list
 if "https://tiby.vercel.app" not in _origins:
     _origins = ["https://tiby.vercel.app"] + _origins
@@ -43,61 +46,61 @@ async def request_context(request: Request, call_next):
     response.headers["X-Request-ID"] = rid
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    response.headers["Permissions-Policy"] = "camera=(self), microphone=(self), geolocation=()"
     response.headers["Cache-Control"] = (
         "no-store" if request.url.path.startswith("/api/") else "no-cache"
     )
     ms = int((time.perf_counter() - start) * 1000)
-    log.info(
-        "request request_id=%s method=%s path=%s status=%s ms=%d",
-        rid, request.method, request.url.path, response.status_code, ms,
-    )
+    log.info("request request_id=%s method=%s path=%s status=%s ms=%d",
+             rid, request.method, request.url.path, response.status_code, ms)
     return response
 
 
 @app.on_event("startup")
 async def startup():
+    # 1. DB tables
     try:
         from sqlalchemy import text
         from app.core.database import _get_engine
         from app.models.models import Base
         engine = _get_engine()
         async with engine.begin() as conn:
-            await conn.execute(text("""
-                DO $$ BEGIN
-                    CREATE TYPE taskstatus AS ENUM ('pending', 'done', 'cancelled');
-                EXCEPTION WHEN duplicate_object THEN NULL;
-                END $$;
-            """))
-            await conn.execute(text("""
-                DO $$ BEGIN
-                    CREATE TYPE meetingstatus AS ENUM ('recording', 'processing', 'done', 'failed');
-                EXCEPTION WHEN duplicate_object THEN NULL;
-                END $$;
-            """))
-            await conn.execute(text("""
-                DO $$ BEGIN
-                    CREATE TYPE agentrunstatus AS ENUM ('running', 'completed', 'failed');
-                EXCEPTION WHEN duplicate_object THEN NULL;
-                END $$;
-            """))
+            for stmt in [
+                "DO $$ BEGIN CREATE TYPE taskstatus AS ENUM ('pending','done','cancelled'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;",
+                "DO $$ BEGIN CREATE TYPE meetingstatus AS ENUM ('recording','processing','done','failed'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;",
+                "DO $$ BEGIN CREATE TYPE agentrunstatus AS ENUM ('running','completed','failed'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;",
+            ]:
+                await conn.execute(text(stmt))
+            # Enable pgvector if available
+            try:
+                await conn.execute(text('CREATE EXTENSION IF NOT EXISTS vector'))
+            except Exception:
+                pass
             await conn.run_sync(Base.metadata.create_all)
-        log.info("Database tables and enum types ready.")
+        log.info("Database ready.")
     except Exception as e:
         log.error("Startup DB init failed: %s", e)
+
+    # 2. Keep-alive ping — prevents Render free tier cold starts (30-60s spin-up)
+    async def _ping():
+        await asyncio.sleep(60)
+        while True:
+            try:
+                async with httpx.AsyncClient(timeout=5) as c:
+                    await c.get("https://tiby.onrender.com/healthz")
+            except Exception:
+                pass
+            await asyncio.sleep(600)
+
+    asyncio.create_task(_ping())
+    log.info("Keep-alive ping started.")
 
 
 API_PREFIX = "/api/v1"
 
 for router in (
-    agent.router,
-    analytics.router,
-    contacts.router,
-    emails.router,
-    meetings.router,
-    tasks.router,
-    voice.router,
-    profile.router,
+    agent.router, analytics.router, contacts.router,
+    emails.router, meetings.router, tasks.router,
+    voice.router, profile.router, memory.router, search.router,
 ):
     app.include_router(router, prefix=API_PREFIX)
 
@@ -106,4 +109,6 @@ for router in (
 async def health():
     return {"status": "ok", "app": "Tiby API", "version": "2.0.0"}
 
-
+@app.get("/")
+async def root():
+    return {"status": "ok"}
