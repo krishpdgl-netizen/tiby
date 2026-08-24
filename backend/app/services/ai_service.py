@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import re
+from datetime import date as _date
 from pydantic import ValidationError
 import google.generativeai as genai
 from app.core.config import settings
@@ -114,7 +115,7 @@ async def generate_mom(transcript: str, meeting_title: str | None = None) -> dic
         return {'summary': 'No speech detected.', 'mom_markdown': '', 'decisions': [], 'action_items': []}
     if len(transcript) > 180_000:
         transcript = transcript[:180_000]
-    prompt = f'''Analyze this meeting transcript and return ONLY JSON with keys: summary, mom_markdown, decisions (array), action_items (array with task/owner/due). Only assign owner if explicitly stated.\nTitle: {meeting_title or 'Meeting'}\nTranscript:\n{transcript}'''
+    prompt = f'''Today is {_date.today().isoformat()}. Analyze this meeting transcript and return ONLY JSON with keys: summary, mom_markdown, decisions (array), action_items (array with task/owner/due). Only assign owner if explicitly stated.\nTitle: {meeting_title or 'Meeting'}\nTranscript:\n{transcript}'''
     try:
         data = _extract_json(await _generate(prompt, temperature=0.1))
     except Exception:
@@ -130,6 +131,7 @@ async def generate_mom(transcript: str, meeting_title: str | None = None) -> dic
 async def plan_agent(message: str, history: list[dict], context: dict) -> AgentPlan:
     schema = AgentPlan.model_json_schema()
     prompt = f'''You are Tiby, a smart AI personal assistant with access to Google Search.
+Today's date is {_date.today().isoformat()}.
 Return ONLY valid JSON matching this schema:\n{json.dumps(schema)}
 
 Allowed action types: navigate, add_task, complete_task, add_contact, update_contact, call_contact, whatsapp_contact, email_contact.
@@ -187,12 +189,14 @@ User message: {message}'''
 
 
 async def prioritize_tasks(tasks: list[dict]) -> list[dict]:
-    prompt = f'''Prioritize these open tasks. Return ONLY a JSON array with one object per input task, in the SAME ORDER. Each object must have priority (high, medium, or low) and reason (max 12 words).
+    today = _date.today().isoformat()
+    prompt = f'''Today is {today}. Prioritize these open tasks. Return ONLY a JSON array with one object per input task, in the SAME ORDER. Each object must have priority (high, medium, or low) and reason (max 10 words).
 STRICT RULES:
 - Only mark high if there is an EXPLICIT due date that is today or overdue, or the user explicitly said urgent.
 - Do NOT invent deadlines or assume urgency from task titles alone.
 - A task with no due date is at most medium priority.
-- reason must be factual, max 12 words, no invented urgency.
+- reason: describe WHY it is that priority based on the task title. Never say "no due date" or "TBD" — that is not useful. Say something like "Financial obligation" or "Long-term planning" instead.
+- Max 10 words per reason.
 Tasks: {json.dumps(tasks, default=str)}'''
     raw = await _generate(prompt, temperature=0.1)
     cleaned = re.sub(r'^```(?:json)?|```$', '', raw.strip(), flags=re.MULTILINE).strip()
@@ -207,8 +211,17 @@ Tasks: {json.dumps(tasks, default=str)}'''
 
 
 async def generate_eod_summary(tasks: list[dict]) -> dict:
-    prompt = f'''Create an end-of-day review from the user's tasks. Return ONLY JSON with today_summary and tomorrow_plan. Be concise, factual, do not claim work happened unless a task is marked done. Tasks: {json.dumps(tasks, default=str)}'''
-    data = _extract_json(await _generate(prompt, temperature=0.2))
+    done_tasks = [t for t in tasks if t.get('status') == 'done']
+    pending_tasks = [t for t in tasks if t.get('status') != 'done']
+    today = _date.today().isoformat()
+    prompt = f'''Today is {today}. Create an end-of-day review. Return ONLY JSON with today_summary and tomorrow_plan.
+STRICT RULES:
+- today_summary: ONLY mention tasks with status="done". If none are done, say "No tasks completed today." NEVER claim a pending task was completed.
+- tomorrow_plan: list up to 3 pending tasks. Use their exact titles. Do not invent urgency or deadlines not in the data.
+- Be factual. Never hallucinate.
+Done tasks: {json.dumps(done_tasks, default=str)}
+Pending tasks: {json.dumps(pending_tasks, default=str)}'''
+    data = _extract_json(await _generate(prompt, temperature=0.1))
     return {
         'today_summary': str(data.get('today_summary') or ''),
         'tomorrow_plan': str(data.get('tomorrow_plan') or ''),
