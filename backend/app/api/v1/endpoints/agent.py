@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date as _date, timedelta
 from urllib.parse import quote
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
@@ -11,6 +11,23 @@ from app.models.models import AgentRun, AgentStep, Contact, Task, User
 from app.schemas.agent import AgentChatRequest, AgentChatResponse
 from app.services.ai_service import plan_agent
 from app.services.memory_service import remember, semantic_memory_search
+
+
+def _resolve_due_date(due: str | None) -> str | None:
+    """Convert relative dates like today/tomorrow to ISO format using server date."""
+    if not due:
+        return None
+    d = due.strip().lower()
+    today = _date.today()
+    if d in ('today', 'tonight'):
+        return today.isoformat()
+    if d in ('tomorrow', 'tmrw'):
+        return (today + timedelta(days=1)).isoformat()
+    if d in ('next week',):
+        return (today + timedelta(weeks=1)).isoformat()
+    # Already an ISO date or other string — return as-is
+    return due
+
 
 router = APIRouter(prefix='/agent', tags=['agent'])
 
@@ -99,7 +116,7 @@ async def chat(req: AgentChatRequest, user: CurrentUser, db: AsyncSession = Depe
                 owner_name = action.owner or 'Me'
                 assigned_to = await _resolve_assignee(owner_name, user.id, all_contacts, db)
                 task = Task(user_id=user.id, assigned_to_user_id=assigned_to,
-                            title=action.title[:500], due_date=action.due,
+                            title=action.title[:500], due_date=_resolve_due_date(action.due),
                             owner=owner_name, source='agent', status='pending')
                 db.add(task)
                 await db.flush()
