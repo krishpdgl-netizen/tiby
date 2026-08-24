@@ -149,7 +149,7 @@ export default function HomePage({ user }) {
         {messages.map(msg => (
           <div key={msg.id}>
             <div className={`t-bubble-row ${msg.role === 'user' ? 'user' : ''}`}>
-              {msg.role === 'tiby' && <div className="t-bubble-av">T</div>}
+              {msg.role === 'tiby' && <div className="t-bubble-av"><svg width="14" height="14" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M256,105 C316,105 407,196 407,256 C330,256 256,216 256,105Z" stroke="white" stroke-width="40" stroke-linejoin="round"/><path d="M256,105 C196,105 105,196 105,256 C182,256 256,216 256,105Z" stroke="white" stroke-width="40" stroke-linejoin="round"/><path d="M256,407 C316,407 407,316 407,256 C330,256 256,296 256,407Z" stroke="white" stroke-width="40" stroke-linejoin="round"/><path d="M256,407 C196,407 105,316 105,256 C182,256 256,296 256,407Z" stroke="white" stroke-width="40" stroke-linejoin="round"/><rect x="214" y="214" width="84" height="84" rx="6" stroke="white" stroke-width="32" transform="rotate(45 256 256)"/></svg></div>}
               {msg.role === 'user' && (
                 <div className="t-bubble-av user">
                   {(user?.user_metadata?.full_name?.[0] || user?.email?.[0] || 'U').toUpperCase()}
@@ -196,7 +196,7 @@ export default function HomePage({ user }) {
         ))}
         {thinking && (
           <div className="t-bubble-row">
-            <div className="t-bubble-av">T</div>
+            <div className="t-bubble-av"><svg width="14" height="14" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M256,105 C316,105 407,196 407,256 C330,256 256,216 256,105Z" stroke="white" stroke-width="40" stroke-linejoin="round"/><path d="M256,105 C196,105 105,196 105,256 C182,256 256,216 256,105Z" stroke="white" stroke-width="40" stroke-linejoin="round"/><path d="M256,407 C316,407 407,316 407,256 C330,256 256,296 256,407Z" stroke="white" stroke-width="40" stroke-linejoin="round"/><path d="M256,407 C196,407 105,316 105,256 C182,256 256,296 256,407Z" stroke="white" stroke-width="40" stroke-linejoin="round"/><rect x="214" y="214" width="84" height="84" rx="6" stroke="white" stroke-width="32" transform="rotate(45 256 256)"/></svg></div>
             <div style={{ background: '#fff', border: '1px solid #f0f0ef', borderRadius: '4px 14px 14px 14px' }}>
               <div className="t-thinking"><span /><span /><span /></div>
             </div>
