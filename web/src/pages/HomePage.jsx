@@ -20,7 +20,7 @@ function greeting(){const h=new Date().getHours();return h<12?'Good morning':h<1
 export default function HomePage({ user }) {
   const firstName = user?.user_metadata?.full_name?.split(' ')[0] || user?.email?.split('@')[0] || 'there'
   const [messages, setMessages] = useState(() => {
-    try { const s = sessionStorage.getItem(STORAGE_KEY); if (s) return JSON.parse(s) } catch {}
+    try { const s = localStorage.getItem(STORAGE_KEY); if (s) return JSON.parse(s) } catch {}
     return [{ id: 1, role: 'tiby', type: 'actions', text: `${greeting()}, ${firstName}! What would you like to do today?` }]
   })
   const [input, setInput]       = useState('')
@@ -35,7 +35,7 @@ export default function HomePage({ user }) {
   const inputRef  = useRef()
 
   useEffect(() => {
-    try { sessionStorage.setItem(STORAGE_KEY, JSON.stringify(messages.slice(-50))) } catch {}
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(messages.slice(-50))) } catch {}
   }, [messages])
 
   // Scroll to bottom smoothly
