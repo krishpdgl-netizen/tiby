@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = 'INFO'
 
     # Memory / embeddings
-    GEMINI_EMBEDDING_MODEL: str = 'models/text-embedding-004'
+    GEMINI_EMBEDDING_MODEL: str = 'models/embedding-001'
     MEMORY_EMBEDDING_DIMENSIONS: int = 768
 
     @property
