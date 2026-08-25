@@ -170,7 +170,8 @@ RULES:
 - Use update_contact when user wants to update a field on an EXISTING contact. Set text to the contact name.
 - Use call_contact when user says "call [name]" or "ring [name]". Set contact_name to the person's name.
 - Use whatsapp_contact when user says "whatsapp [name]", "message [name] on whatsapp", or "send [name] a message". Set contact_name and optionally message.
-- Use email_contact when user says "email [name]" or "send [name] an email". Set contact_name and optionally title (subject) and message (body).
+- Use email_contact when: user says "email [name]", "write a mail to [name/email]", "send [name] an email", "draft a mail to", "compose an email", OR when the user confirms a previously discussed email with words like "do it", "send it", "yes send", "go ahead", "confirm" — check conversation history for the contact name/email to use. Set contact_name to the person's name from contacts, OR if an email address was given directly, set contact_name to that email address and email to that address. Set message to the full instruction so the email can be properly drafted.
+- CRITICAL: You CANNOT actually send emails. When email_contact fires, the system produces a button the user must click to open their mail client. NEVER say "I have sent the email" or "Email sent" — always say "I've drafted that email — tap the button below to open it in your mail app."
 - NEVER create a new contact if one already exists with the same name — use update_contact instead.
 - When asked about a contact's details, check context carefully — phone, email, company, role are ALL provided.
 - Only navigate when the user explicitly asks to go somewhere in the app.
