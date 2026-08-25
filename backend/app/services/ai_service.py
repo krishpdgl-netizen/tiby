@@ -13,8 +13,8 @@ from app.schemas.contacts import CardExtraction
 genai.configure(api_key=settings.GEMINI_API_KEY)
 
 # Models
-_AGENT_MODEL  = 'gemini-2.0-flash'   # supports Google Search grounding
-_VISION_MODEL = settings.GEMINI_VISION_MODEL if hasattr(settings, 'GEMINI_VISION_MODEL') else 'gemini-2.0-flash'
+_AGENT_MODEL  = 'gemini-3.6-flash'   # latest flash — supports Google Search grounding
+_VISION_MODEL = settings.GEMINI_VISION_MODEL if hasattr(settings, 'GEMINI_VISION_MODEL') else 'gemini-3.6-flash'
 _FAST_MODEL   = settings.GEMINI_MODEL  # gemini-3.1-flash-lite for cheap tasks
 
 
