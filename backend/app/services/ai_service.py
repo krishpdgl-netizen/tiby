@@ -157,8 +157,7 @@ async def _reason_about_message(message: str, history: list[dict], context: dict
     hist_text = ""
     for m in recent:
         role = "User" if m.get("role") == "user" else "Tiby"
-        hist_text += f"{role}: {m.get('content', '')}
-"
+        hist_text += f"{role}: {m.get('content', '')}\n"
 
     reasoning_prompt = f'''You are analyzing a conversation to understand what the user ACTUALLY means.
 
