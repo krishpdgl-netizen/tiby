@@ -46,8 +46,31 @@ async def extract_business_card(image_bytes: bytes, mime_type='image/jpeg') -> d
 
 
 async def draft_email(contact: dict, user_instruction: str, user_name: str | None = None) -> dict:
-    prompt = f'''Draft a concise professional plain-text email. Return ONLY JSON with keys subject and body.\nSender: {user_name or 'the user'}\nContact: {json.dumps(contact)}\nInstruction: {user_instruction}'''
-    data = _extract_json(await _generate(prompt, temperature=0.3))
+    name    = contact.get('name') or 'there'
+    company = contact.get('company') or ''
+    role    = contact.get('role') or ''
+    to_line = name
+    if role and company:
+        to_line = f'{name} ({role} at {company})'
+    elif company:
+        to_line = f'{name} ({company})'
+    first_name = name.split()[0] if name != 'there' else 'there'
+
+    prompt = f'''You are drafting a professional business email on behalf of {user_name or 'the sender'}.
+
+Recipient: {to_line}
+Instruction from sender: {user_instruction}
+
+Rules:
+- Address the recipient by first name only (e.g. "Dear {first_name},")
+- Keep the body concise and focused ONLY on what the instruction says — do not add unrelated content
+- Use a professional but warm tone
+- Sign off with "Best regards,\\n{user_name or ''}"
+- Plain text only, no markdown
+
+Return ONLY valid JSON with exactly two keys: "subject" and "body".'''
+
+    data = _extract_json(await _generate(prompt, temperature=0.2))
     subject = str(data.get('subject') or '').strip()[:500]
     body = str(data.get('body') or '').strip()
     if not subject or not body:
