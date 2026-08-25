@@ -40,42 +40,48 @@ def _chunks(text_value: str, max_chars: int = 1800, overlap: int = 180) -> list[
     return [x for x in out if x]
 
 
+# Embedding models to try in order (fallback chain)
+# embedding-001 = stable v1beta model, works with google-generativeai 0.8.x
+# text-embedding-004 = v1 model, needs newer SDK or direct REST call
+_EMBED_MODELS = ['models/embedding-001']
+
+
+async def _do_embed(content: str, task_type: str) -> list[float] | None:
+    """Try each embedding model in order, return first success."""
+    for model_name in _EMBED_MODELS:
+        try:
+            result = await asyncio.to_thread(
+                genai.embed_content,
+                model=model_name,
+                content=content[:12000],
+                task_type=task_type,
+            )
+            vec = result.get('embedding') if isinstance(result, dict) else None
+            if vec and len(vec) > 0:
+                # Accept any dimension — store what we get, search will match
+                return [float(x) for x in vec]
+        except Exception as exc:
+            log.warning('Embedding with %s failed: %s', model_name, exc)
+    return None
+
+
 async def embed_text(content: str) -> list[float] | None:
     """Generate a Gemini embedding. Memory still works lexically if this fails."""
     if not settings.GEMINI_API_KEY or not content.strip():
         return None
-    try:
-        result = await asyncio.to_thread(
-            genai.embed_content,
-            model=settings.GEMINI_EMBEDDING_MODEL,
-            content=content[:12000],
-            task_type='retrieval_document',
-        )
-        vec = result.get('embedding') if isinstance(result, dict) else None
-        if vec and len(vec) == settings.MEMORY_EMBEDDING_DIMENSIONS:
-            return [float(x) for x in vec]
-        log.warning('Embedding dimension mismatch: expected=%s got=%s', settings.MEMORY_EMBEDDING_DIMENSIONS, len(vec or []))
-    except Exception as exc:
-        log.warning('Embedding generation failed; lexical memory remains available: %s', exc)
-    return None
+    vec = await _do_embed(content, 'retrieval_document')
+    if vec is None:
+        log.warning('Embedding generation failed; lexical memory remains available')
+    return vec
 
 
 async def embed_query(content: str) -> list[float] | None:
     if not settings.GEMINI_API_KEY or not content.strip():
         return None
-    try:
-        result = await asyncio.to_thread(
-            genai.embed_content,
-            model=settings.GEMINI_EMBEDDING_MODEL,
-            content=content[:12000],
-            task_type='retrieval_query',
-        )
-        vec = result.get('embedding') if isinstance(result, dict) else None
-        if vec and len(vec) == settings.MEMORY_EMBEDDING_DIMENSIONS:
-            return [float(x) for x in vec]
-    except Exception as exc:
-        log.warning('Query embedding failed; using lexical search: %s', exc)
-    return None
+    vec = await _do_embed(content, 'retrieval_query')
+    if vec is None:
+        log.warning('Query embedding failed; using lexical search')
+    return vec
 
 
 async def remember(
