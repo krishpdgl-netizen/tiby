@@ -182,31 +182,43 @@ async def chat(req: AgentChatRequest, user: CurrentUser, db: AsyncSession = Depe
                     result = {'ok': False, 'reason': f'No phone number for {action.contact_name}'}
 
             elif action.type == 'email_contact' and action.contact_name:
-                c = _find_contact(action.contact_name, all_contacts_orm)
-                if c and c.email:
-                    # Use draft_email() so the email is properly AI-drafted,
-                    # not just the agent's raw inline text
-                    user_instruction = action.message or req.message
-                    try:
-                        drafted = await draft_email(
-                            {'name': c.name, 'email': c.email, 'company': c.company, 'role': c.role},
-                            user_instruction,
-                            user.name,
-                        )
-                        subject = drafted['subject']
-                        body = drafted['body']
-                    except Exception:
-                        # Fallback to agent-provided values if draft_email fails
-                        subject = action.title or ''
-                        body = action.message or ''
-                    parts = []
-                    if subject: parts.append(f'subject={quote(subject)}')
-                    if body: parts.append(f'body={quote(body)}')
-                    url = f'mailto:{c.email}' + (f'?{"&".join(parts)}' if parts else '')
-                    result = {'ok': True, 'action': 'email', 'name': c.name, 'email': c.email,
-                              'url': url, 'subject': subject, 'body': body}
+                import re as _re
+                _raw = action.contact_name.strip()
+                _is_raw_email = bool(_re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', _raw))
+
+                if _is_raw_email:
+                    # Agent was given a raw email address (not a contact name)
+                    to_email = _raw
+                    contact_dict = {'name': action.email or _raw, 'email': to_email, 'company': None, 'role': None}
+                    display_name = to_email
                 else:
-                    result = {'ok': False, 'reason': f'No email for {action.contact_name}'}
+                    c = _find_contact(_raw, all_contacts_orm)
+                    if not c or not c.email:
+                        result = {'ok': False, 'reason': f'No email found for {_raw}'}
+                        db.add(AgentStep(run_id=run.id, step_number=step_no, tool=action.type,
+                            arguments=action.model_dump(exclude_none=True), result=result, status='skipped'))
+                        outputs.append({'type': action.type, **result})
+                        step_no += 1
+                        continue
+                    to_email = c.email
+                    contact_dict = {'name': c.name, 'email': c.email, 'company': c.company, 'role': c.role}
+                    display_name = c.name
+
+                user_instruction = action.message or req.message
+                try:
+                    drafted = await draft_email(contact_dict, user_instruction, user.name)
+                    subject = drafted['subject']
+                    body = drafted['body']
+                except Exception:
+                    subject = action.title or ''
+                    body = action.message or ''
+
+                parts = []
+                if subject: parts.append(f'subject={quote(subject)}')
+                if body: parts.append(f'body={quote(body)}')
+                url = f'mailto:{to_email}' + (f'?{"&".join(parts)}' if parts else '')
+                result = {'ok': True, 'action': 'email', 'name': display_name, 'email': to_email,
+                          'url': url, 'subject': subject, 'body': body}
 
             db.add(AgentStep(
                 run_id=run.id, step_number=step_no, tool=action.type,
