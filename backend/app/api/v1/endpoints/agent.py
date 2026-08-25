@@ -9,7 +9,7 @@ from app.core.database import get_db
 from app.core.rate_limit import enforce_rate_limit
 from app.models.models import AgentRun, AgentStep, Contact, Task, User
 from app.schemas.agent import AgentChatRequest, AgentChatResponse
-from app.services.ai_service import plan_agent
+from app.services.ai_service import plan_agent, draft_email
 from app.services.memory_service import remember, semantic_memory_search
 
 
@@ -184,13 +184,27 @@ async def chat(req: AgentChatRequest, user: CurrentUser, db: AsyncSession = Depe
             elif action.type == 'email_contact' and action.contact_name:
                 c = _find_contact(action.contact_name, all_contacts_orm)
                 if c and c.email:
-                    subject = action.title or ''
-                    body = action.message or ''
+                    # Use draft_email() so the email is properly AI-drafted,
+                    # not just the agent's raw inline text
+                    user_instruction = action.message or req.message
+                    try:
+                        drafted = await draft_email(
+                            {'name': c.name, 'email': c.email, 'company': c.company, 'role': c.role},
+                            user_instruction,
+                            user.name,
+                        )
+                        subject = drafted['subject']
+                        body = drafted['body']
+                    except Exception:
+                        # Fallback to agent-provided values if draft_email fails
+                        subject = action.title or ''
+                        body = action.message or ''
                     parts = []
                     if subject: parts.append(f'subject={quote(subject)}')
                     if body: parts.append(f'body={quote(body)}')
                     url = f'mailto:{c.email}' + (f'?{"&".join(parts)}' if parts else '')
-                    result = {'ok': True, 'action': 'email', 'name': c.name, 'email': c.email, 'url': url}
+                    result = {'ok': True, 'action': 'email', 'name': c.name, 'email': c.email,
+                              'url': url, 'subject': subject, 'body': body}
                 else:
                     result = {'ok': False, 'reason': f'No email for {action.contact_name}'}
 
