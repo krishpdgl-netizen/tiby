@@ -9,11 +9,26 @@ def _redis():
     if _client is None:
         try:
             import redis.asyncio as redis
-            _client = redis.from_url(
-                settings.REDIS_URL,
-                encoding='utf-8',
-                decode_responses=True
-            )
+            import ssl as _ssl
+            url = settings.REDIS_URL or ''
+            # Upstash and most managed Redis use rediss:// (TLS)
+            # redis.asyncio needs ssl_cert_reqs=None to accept their certs
+            if url.startswith('rediss://'):
+                ssl_ctx = _ssl.create_default_context()
+                ssl_ctx.check_hostname = False
+                ssl_ctx.verify_mode = _ssl.CERT_NONE
+                _client = redis.from_url(
+                    url,
+                    encoding='utf-8',
+                    decode_responses=True,
+                    ssl_cert_reqs=None,
+                )
+            else:
+                _client = redis.from_url(
+                    url,
+                    encoding='utf-8',
+                    decode_responses=True,
+                )
         except Exception as e:
             log.warning('Redis unavailable, rate limiting disabled: %s', e)
             return None
