@@ -70,6 +70,7 @@ async def chat(req: AgentChatRequest, user: CurrentUser, db: AsyncSession = Depe
     await db.refresh(run)
 
     try:
+        # ── Contacts ──────────────────────────────────────────────────────────
         contacts_result = await db.execute(
             select(Contact).where(Contact.user_id == user.id).order_by(Contact.created_at.desc()).limit(50)
         )
@@ -80,16 +81,44 @@ async def chat(req: AgentChatRequest, user: CurrentUser, db: AsyncSession = Depe
             for c in all_contacts_orm
         ]
 
+        # ── Open tasks ────────────────────────────────────────────────────────
         tasks_result = await db.execute(
             select(Task).where(Task.user_id == user.id, Task.status == 'pending')
             .order_by(Task.created_at.desc()).limit(20)
         )
 
+        # ── Semantic memory ───────────────────────────────────────────────────
         memory_context = await semantic_memory_search(db, user.id, req.message, 6)
+
+        # ── Cross-session conversation history from DB ────────────────────────
+        # Pull last 10 completed AgentRuns so Tiby remembers past sessions
+        history_q = await db.execute(
+            select(AgentRun)
+            .where(AgentRun.user_id == user.id, AgentRun.status == 'completed',
+                   AgentRun.final_response.isnot(None))
+            .order_by(AgentRun.created_at.desc())
+            .limit(10)
+        )
+        past_runs = history_q.scalars().all()
+        # Interleave user/assistant pairs in chronological order
+        cross_session_history = []
+        for r in reversed(past_runs):
+            if r.prompt:
+                cross_session_history.append({'role': 'user', 'content': r.prompt})
+            if r.final_response:
+                cross_session_history.append({'role': 'assistant', 'content': r.final_response})
+
+        # ── User profile ──────────────────────────────────────────────────────
+        user_q = await db.execute(select(User).where(User.id == user.id))
+        user_row = user_q.scalar_one_or_none()
+        prefs = user_row.preferences or {} if user_row else {}
 
         context = {
             'name': user.name,
             'email': user.email,
+            'organisation': prefs.get('organisation', ''),
+            'role_at_org': prefs.get('role', ''),
+            'mobile': prefs.get('mobile', ''),
             'recent_contacts': all_contacts,
             'relevant_memory': [
                 {'title': m.get('title'), 'content': m.get('snippet'), 'source': m.get('source_type')}
@@ -101,7 +130,12 @@ async def chat(req: AgentChatRequest, user: CurrentUser, db: AsyncSession = Depe
             ],
         }
 
-        plan = await plan_agent(req.message, [m.model_dump() for m in req.history], context)
+        # Merge: cross-session history (older) + current session history (newer)
+        merged_history = cross_session_history + [m.model_dump() for m in req.history]
+        # Deduplicate and cap at 30 turns to stay within token budget
+        merged_history = merged_history[-30:]
+
+        plan = await plan_agent(req.message, merged_history, context)
 
         outputs = []
         step_no = 1
