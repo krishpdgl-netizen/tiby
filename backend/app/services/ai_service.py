@@ -151,8 +151,46 @@ async def generate_mom(transcript: str, meeting_title: str | None = None) -> dic
     }
 
 
+async def _reason_about_message(message: str, history: list[dict], context: dict) -> str:
+    """Step 1: Free-form reasoning pass. Figures out what the user ACTUALLY means before we produce JSON."""
+    recent = history[-6:] if history else []
+    hist_text = ""
+    for m in recent:
+        role = "User" if m.get("role") == "user" else "Tiby"
+        hist_text += f"{role}: {m.get('content', '')}
+"
+
+    reasoning_prompt = f'''You are analyzing a conversation to understand what the user ACTUALLY means.
+
+Recent conversation:
+{hist_text}
+User just said: "{message}"
+
+Answer these questions briefly (2-3 sentences total):
+1. Is this a NEW request or a FOLLOW-UP/CLARIFICATION to the previous message? (Look for words like "then", "also", "but", "so", "he", "she", "it", "that")
+2. If follow-up: what is the user adding or correcting from their last message?
+3. What does the user actually want right now, in plain English?
+
+Be specific. Do not produce JSON.'''
+
+    try:
+        model = genai.GenerativeModel(_AGENT_MODEL)
+        resp = await asyncio.to_thread(
+            model.generate_content, reasoning_prompt,
+            generation_config={'temperature': 0.1, 'max_output_tokens': 300}
+        )
+        return getattr(resp, 'text', '') or ''
+    except Exception:
+        return ''
+
+
 async def plan_agent(message: str, history: list[dict], context: dict) -> AgentPlan:
     schema = AgentPlan.model_json_schema()
+
+    # ── Step 1: Reason first, act second ──────────────────────────────────────
+    reasoning = await _reason_about_message(message, history, context)
+
+    # ── Step 2: Produce action JSON informed by the reasoning ─────────────────
     prompt = f'''You are Tiby, a smart AI personal assistant with access to Google Search.
 Today's date is {_date.today().isoformat()}.
 Return ONLY valid JSON matching this schema:\n{json.dumps(schema)}
@@ -160,27 +198,8 @@ Return ONLY valid JSON matching this schema:\n{json.dumps(schema)}
 Allowed action types: navigate, add_task, complete_task, add_contact, update_contact, call_contact, whatsapp_contact, email_contact.
 Allowed navigation routes: /scan, /meetings, /contacts, /analytics, /settings.
 
-══ MULTI-TURN REASONING (read this carefully) ══
-You have access to the full conversation history. Every message must be interpreted IN CONTEXT of what came before.
-
-BEFORE deciding what to do, ask yourself:
-1. Is this message a clarification/addition to the PREVIOUS topic, or is it a brand new request?
-2. Words like "then", "also", "now", "actually", "wait", "but", "so", "and" at the start = continuation of previous topic.
-3. Short follow-ups (under 6 words) without a new subject = almost always a clarification, not a new action.
-4. Only treat as a new independent request if the user clearly switches topic with a new subject.
-
-CLARIFICATION examples (DO NOT re-trigger previous action — update your understanding and reply):
-- Previous: "draft a mail to Panache to resign asap" → User says "he has to resign"
-  → This means PANACHE is the one resigning, not the user. Re-draft the email accordingly — the email should inform Panache that HE is being asked to resign, addressed to him.
-- Previous: "should i walk or drive to car wash 50m away" → User says "then how to get the car washed"
-  → User is AT the car wash asking how the service works, not asking directions again.
-- Previous: any email draft → User says "make it more formal" / "add X" / "shorten it"
-  → Redraft the same email with the change, same recipient.
-
-CONTINUATION examples (build on previous context):
-- "then what" / "and then" / "what else" → Continue the same topic
-- "ok do it" / "go ahead" / "yes" → Confirm the last proposed action
-- "no wait" → The user changed their mind about the last action
+══ YOUR REASONING (trust this — you already worked this out) ══
+{reasoning}
 
 ══ RULES ══
 - You have Google Search — use it for current events, prices, weather, facts, real-time info. Search before answering such questions.
@@ -191,14 +210,14 @@ CONTINUATION examples (build on previous context):
 - Use update_contact when user wants to update a field on an EXISTING contact. Set text to the contact name.
 - Use call_contact when user says "call [name]" or "ring [name]". Set contact_name to the person's name.
 - Use whatsapp_contact when user says "whatsapp [name]", "message [name] on whatsapp". Set contact_name and optionally message.
-- Use email_contact when: user says "email [name]", "write a mail to [name/email]", "draft a mail to", "compose an email", OR confirms a pending email ("do it", "send it", "go ahead", "yes") — look back in history for recipient. Also use when a clarification changes the email content (re-draft with same recipient + updated instruction). Set message to the COMPLETE instruction including all clarifications from history.
+- Use email_contact when: user says "email [name]", "write a mail to [name/email]", "draft a mail to", "compose an email", OR confirms a pending email ("do it", "send it", "go ahead", "yes") — look back in history for recipient. Also when a clarification changes email content (re-draft with same recipient + updated instruction). Set message to the COMPLETE instruction including all clarifications from history.
 - CRITICAL: You CANNOT send emails. The system generates a button the user taps to open their mail client. NEVER say "I have sent the email". Always say "I've drafted that — tap the button to open it in your mail app."
 - NEVER create a new contact if one already exists — use update_contact.
 - Never invent urgency, deadlines, or priorities not mentioned by the user.
 - Be concise, warm, and genuinely useful. Don't pad replies.
 
-User context: {json.dumps(context, default=str)[:12000]}
-Conversation history: {json.dumps(history[-20:], default=str)[:20000]}
+User context: {json.dumps(context, default=str)[:10000]}
+Conversation history: {json.dumps(history[-20:], default=str)[:18000]}
 Current user message: {message}'''
 
     # Use gemini-2.0-flash with Google Search grounding
@@ -211,14 +230,14 @@ Current user message: {message}'''
             model.generate_content,
             prompt,
             tools=[google_search_tool],
-            generation_config={'temperature': 0.3, 'max_output_tokens': 2000},
+            generation_config={'temperature': 0.2, 'max_output_tokens': 2000},
         )
         raw = getattr(response, 'text', '') or ''
         if not raw.strip():
             raise ValueError('Empty agent response')
     except Exception:
-        # Fallback to fast model without search if grounding fails
-        raw = await _generate(prompt, _FAST_MODEL, temperature=0.3)
+        # Fallback: same model, just without Search grounding
+        raw = await _generate(prompt, _AGENT_MODEL, temperature=0.2)
 
     try:
         plan = AgentPlan.model_validate(_extract_json(raw))
