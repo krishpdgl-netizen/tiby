@@ -4,6 +4,15 @@ import { useSpeech } from '../hooks/useSpeech'
 
 const STEP = { SCAN: 0, VOICE: 1, DRAFT: 2, SENT: 3 }
 
+const CATEGORIES = [
+  'Friends (old customers)',
+  'China OEM 2026',
+  'OEM Bulk Customers 2026',
+  'Consultants / Service Provider (Insurance, Funding, Governing, Rating, Testing Lab)',
+  'Supplier / Service',
+  'Others',
+]
+
 export default function CardScannerPage() {
   const [step, setStep]               = useState(STEP.SCAN)
   const [armed, setArmed]             = useState(false)
@@ -11,9 +20,9 @@ export default function CardScannerPage() {
   const [status, setStatus]           = useState('Ready to scan')
   const [preview, setPreview]         = useState(null)
   const [extracted, setExtracted]     = useState({})
-  const [imagePath, setImagePath]     = useState(null)   // Supabase Storage path
-  const [imageUrl, setImageUrl]       = useState(null)   // signed preview URL
-  const [contactId, setContactId]     = useState(null)   // DB contact ID after confirm
+  const [imagePath, setImagePath]     = useState(null)
+  const [imageUrl, setImageUrl]       = useState(null)
+  const [contactId, setContactId]     = useState(null)
   const [contactData, setContactData] = useState(null)
   const [loading, setLoading]         = useState(false)
   const [recording, setRecording]     = useState(false)
@@ -21,6 +30,7 @@ export default function CardScannerPage() {
   const [draft, setDraft]             = useState(null)
   const [sending, setSending]         = useState(false)
   const [sendResult, setSendResult]   = useState(null)
+  const [category, setCategory]       = useState('')
 
   const videoRef  = useRef(); const streamRef = useRef()
   const mrRef     = useRef(); const chunksRef = useRef([])
@@ -61,23 +71,21 @@ export default function CardScannerPage() {
     setPreview(URL.createObjectURL(blob))
     setDot('active');setStatus('Reading card…')
     try {
-      // Upload to Render backend → Supabase Storage + Gemini extraction
       const imageFile = new File([blob], 'card.jpg', { type:'image/jpeg' })
       const { data } = await scanCard(imageFile)
       setExtracted(data.extracted || {})
       setImagePath(data.image_path)
-      setImageUrl(data.image_url)  // signed preview URL (5 min TTL)
+      setImageUrl(data.image_url)
       const n = Object.values(data.extracted||{}).filter(Boolean).length
       setDot('done'); setStatus(n ? `${n} detail${n>1?'s':''} extracted` : 'Card saved — enter details manually')
     } catch(e) { setDot('warn'); setStatus('Could not extract — enter details manually') }
   }
 
   async function handleConfirm() {
-    if (!extracted.email?.trim()) return toast('Add an email to draft an email','error')
+    if (!category) return toast('Please select a category first', 'error')
     setLoading(true)
     try {
-      // Save confirmed contact to DB
-      const { data } = await confirmContact(extracted, imagePath, {})
+      const { data } = await confirmContact(extracted, imagePath, {}, category)
       setContactId(data.id)
       setContactData(data.contact)
       setStep(STEP.VOICE)
@@ -110,11 +118,9 @@ export default function CardScannerPage() {
     try {
       let data
       if (contactId) {
-        // Use DB contact — richer context
         const res = await draftEmail(contactId, instruction)
         data = res.data
       } else {
-        // Fallback — contact not yet confirmed
         const res = await draftQuickEmail(extracted, instruction)
         data = res.data
       }
@@ -145,6 +151,7 @@ export default function CardScannerPage() {
     setStep(STEP.SCAN);setArmed(false);setDot('idle');setStatus('Ready to scan')
     setPreview(null);setExtracted({});setImagePath(null);setImageUrl(null)
     setContactId(null);setContactData(null);setInstruction('');setDraft(null);setSendResult(null)
+    setCategory('')
     if(videoRef.current){videoRef.current.style.display='none';videoRef.current.srcObject=null}
   }
 
@@ -194,12 +201,28 @@ export default function CardScannerPage() {
                   </span>
                 </div>
               ))}
+
+              {/* Category picker */}
+              <div className="t-ef-row" style={{alignItems:'flex-start', paddingTop:10}}>
+                <span className="t-ef-key" style={{paddingTop:8}}>Category</span>
+                <div style={{flex:1, display:'flex', flexDirection:'column', gap:6}}>
+                  {CATEGORIES.map(cat => (
+                    <label key={cat} style={{display:'flex', alignItems:'center', gap:8, cursor:'pointer', padding:'6px 10px', borderRadius:9, background: category===cat ? '#1a1a1a' : '#f9f9f8', border: `1px solid ${category===cat ? '#1a1a1a' : '#e5e5e4'}`, transition:'all .12s'}}>
+                      <input type="radio" name="category" value={cat} checked={category===cat} onChange={()=>setCategory(cat)} style={{accentColor:'#1a1a1a', width:15, height:15}}/>
+                      <span style={{fontSize:13, color: category===cat ? '#fff' : '#1a1a1a', fontWeight: category===cat ? 600 : 400}}>{cat}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
             </div>
           )}
           {hasFields&&(
-            <button className="t-btn t-btn-primary" style={{marginTop:12}} onClick={handleConfirm} disabled={loading}>
+            <button className="t-btn t-btn-primary" style={{marginTop:12}} onClick={handleConfirm} disabled={loading||!category}>
               {loading?'Saving…':<><i className="ti ti-mail" aria-hidden="true"/> Save and write email</>}
             </button>
+          )}
+          {hasFields && !category && (
+            <p style={{fontSize:12.5, color:'#f59e0b', textAlign:'center', margin:'4px 0 0'}}>⚠ Select a category to continue</p>
           )}
         </div>
       )}
