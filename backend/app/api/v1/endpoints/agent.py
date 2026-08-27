@@ -9,7 +9,7 @@ from app.core.database import get_db
 from app.core.rate_limit import enforce_rate_limit
 from app.models.models import AgentRun, AgentStep, Contact, Task, User
 from app.schemas.agent import AgentChatRequest, AgentChatResponse
-from app.services.ai_service import plan_agent, draft_email
+from app.services.ai_service import plan_agent
 from app.services.memory_service import remember, semantic_memory_search
 
 
@@ -70,7 +70,6 @@ async def chat(req: AgentChatRequest, user: CurrentUser, db: AsyncSession = Depe
     await db.refresh(run)
 
     try:
-        # ── Contacts ──────────────────────────────────────────────────────────
         contacts_result = await db.execute(
             select(Contact).where(Contact.user_id == user.id).order_by(Contact.created_at.desc()).limit(50)
         )
@@ -81,44 +80,16 @@ async def chat(req: AgentChatRequest, user: CurrentUser, db: AsyncSession = Depe
             for c in all_contacts_orm
         ]
 
-        # ── Open tasks ────────────────────────────────────────────────────────
         tasks_result = await db.execute(
             select(Task).where(Task.user_id == user.id, Task.status == 'pending')
             .order_by(Task.created_at.desc()).limit(20)
         )
 
-        # ── Semantic memory ───────────────────────────────────────────────────
         memory_context = await semantic_memory_search(db, user.id, req.message, 6)
-
-        # ── Cross-session conversation history from DB ────────────────────────
-        # Pull last 10 completed AgentRuns so Tiby remembers past sessions
-        history_q = await db.execute(
-            select(AgentRun)
-            .where(AgentRun.user_id == user.id, AgentRun.status == 'completed',
-                   AgentRun.final_response.isnot(None))
-            .order_by(AgentRun.created_at.desc())
-            .limit(10)
-        )
-        past_runs = history_q.scalars().all()
-        # Interleave user/assistant pairs in chronological order
-        cross_session_history = []
-        for r in reversed(past_runs):
-            if r.prompt:
-                cross_session_history.append({'role': 'user', 'content': r.prompt})
-            if r.final_response:
-                cross_session_history.append({'role': 'assistant', 'content': r.final_response})
-
-        # ── User profile ──────────────────────────────────────────────────────
-        user_q = await db.execute(select(User).where(User.id == user.id))
-        user_row = user_q.scalar_one_or_none()
-        prefs = user_row.preferences or {} if user_row else {}
 
         context = {
             'name': user.name,
             'email': user.email,
-            'organisation': prefs.get('organisation', ''),
-            'role_at_org': prefs.get('role', ''),
-            'mobile': prefs.get('mobile', ''),
             'recent_contacts': all_contacts,
             'relevant_memory': [
                 {'title': m.get('title'), 'content': m.get('snippet'), 'source': m.get('source_type')}
@@ -130,12 +101,7 @@ async def chat(req: AgentChatRequest, user: CurrentUser, db: AsyncSession = Depe
             ],
         }
 
-        # Merge: cross-session history (older) + current session history (newer)
-        merged_history = cross_session_history + [m.model_dump() for m in req.history]
-        # Deduplicate and cap at 30 turns to stay within token budget
-        merged_history = merged_history[-30:]
-
-        plan = await plan_agent(req.message, merged_history, context)
+        plan = await plan_agent(req.message, [m.model_dump() for m in req.history], context)
 
         outputs = []
         step_no = 1
@@ -215,44 +181,26 @@ async def chat(req: AgentChatRequest, user: CurrentUser, db: AsyncSession = Depe
                 else:
                     result = {'ok': False, 'reason': f'No phone number for {action.contact_name}'}
 
+            elif action.type == 'export_contacts':
+                result = {
+                    'ok': True,
+                    'action': 'export_contacts',
+                    'url': '/contacts',
+                    'message': 'Opening contacts — tap the export button (table icon) to download CSV',
+                }
+
             elif action.type == 'email_contact' and action.contact_name:
-                import re as _re
-                _raw = action.contact_name.strip()
-                _is_raw_email = bool(_re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', _raw))
-
-                if _is_raw_email:
-                    # Agent was given a raw email address (not a contact name)
-                    to_email = _raw
-                    contact_dict = {'name': action.email or _raw, 'email': to_email, 'company': None, 'role': None}
-                    display_name = to_email
-                else:
-                    c = _find_contact(_raw, all_contacts_orm)
-                    if not c or not c.email:
-                        result = {'ok': False, 'reason': f'No email found for {_raw}'}
-                        db.add(AgentStep(run_id=run.id, step_number=step_no, tool=action.type,
-                            arguments=action.model_dump(exclude_none=True), result=result, status='skipped'))
-                        outputs.append({'type': action.type, **result})
-                        step_no += 1
-                        continue
-                    to_email = c.email
-                    contact_dict = {'name': c.name, 'email': c.email, 'company': c.company, 'role': c.role}
-                    display_name = c.name
-
-                user_instruction = action.message or req.message
-                try:
-                    drafted = await draft_email(contact_dict, user_instruction, user.name)
-                    subject = drafted['subject']
-                    body = drafted['body']
-                except Exception:
+                c = _find_contact(action.contact_name, all_contacts_orm)
+                if c and c.email:
                     subject = action.title or ''
                     body = action.message or ''
-
-                parts = []
-                if subject: parts.append(f'subject={quote(subject)}')
-                if body: parts.append(f'body={quote(body)}')
-                url = f'mailto:{to_email}' + (f'?{"&".join(parts)}' if parts else '')
-                result = {'ok': True, 'action': 'email', 'name': display_name, 'email': to_email,
-                          'url': url, 'subject': subject, 'body': body}
+                    parts = []
+                    if subject: parts.append(f'subject={quote(subject)}')
+                    if body: parts.append(f'body={quote(body)}')
+                    url = f'mailto:{c.email}' + (f'?{"&".join(parts)}' if parts else '')
+                    result = {'ok': True, 'action': 'email', 'name': c.name, 'email': c.email, 'url': url}
+                else:
+                    result = {'ok': False, 'reason': f'No email for {action.contact_name}'}
 
             db.add(AgentStep(
                 run_id=run.id, step_number=step_no, tool=action.type,
