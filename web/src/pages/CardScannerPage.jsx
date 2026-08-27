@@ -81,6 +81,17 @@ export default function CardScannerPage() {
     } catch(e) { setDot('warn'); setStatus('Could not extract — enter details manually') }
   }
 
+  async function handleSaveOnly() {
+    if (!category) return toast('Please select a category first', 'error')
+    setLoading(true)
+    try {
+      await confirmContact(extracted, imagePath, {}, category)
+      toast('Contact saved!', 'success')
+      reset()
+    } catch { toast('Failed to save contact','error') }
+    finally { setLoading(false) }
+  }
+
   async function handleConfirm() {
     if (!category) return toast('Please select a category first', 'error')
     setLoading(true)
@@ -217,9 +228,14 @@ export default function CardScannerPage() {
             </div>
           )}
           {hasFields&&(
-            <button className="t-btn t-btn-primary" style={{marginTop:12}} onClick={handleConfirm} disabled={loading||!category}>
-              {loading?'Saving…':<><i className="ti ti-mail" aria-hidden="true"/> Save and write email</>}
-            </button>
+            <div style={{display:'flex', gap:8, marginTop:12}}>
+              <button className="t-btn t-btn-ghost" style={{flex:1, marginTop:0}} onClick={handleSaveOnly} disabled={loading||!category}>
+                {loading?'Saving…':<><i className="ti ti-user-check" aria-hidden="true"/> Save contact</>}
+              </button>
+              <button className="t-btn t-btn-primary" style={{flex:1, marginTop:0}} onClick={handleConfirm} disabled={loading||!category}>
+                {loading?'Saving…':<><i className="ti ti-mail" aria-hidden="true"/> Save + Email</>}
+              </button>
+            </div>
           )}
           {hasFields && !category && (
             <p style={{fontSize:12.5, color:'#f59e0b', textAlign:'center', margin:'4px 0 0'}}>⚠ Select a category to continue</p>
