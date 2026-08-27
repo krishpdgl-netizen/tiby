@@ -47,6 +47,7 @@ class Contact(Base):
     address: Mapped[str | None] = mapped_column(Text)
     notes: Mapped[str | None] = mapped_column(Text)
     raw_extraction: Mapped[dict | None] = mapped_column(JSON)
+    category: Mapped[str | None] = mapped_column(String(200))
     card_image_path: Mapped[str | None] = mapped_column(String(1000))
 
     user: Mapped['User'] = relationship(back_populates='contacts')
