@@ -13,8 +13,8 @@ from app.schemas.contacts import CardExtraction
 genai.configure(api_key=settings.GEMINI_API_KEY)
 
 # Models
-_AGENT_MODEL  = 'gemini-3.6-flash'   # latest flash — supports Google Search grounding
-_VISION_MODEL = settings.GEMINI_VISION_MODEL if hasattr(settings, 'GEMINI_VISION_MODEL') else 'gemini-3.6-flash'
+_AGENT_MODEL  = 'gemini-2.0-flash'   # supports Google Search grounding
+_VISION_MODEL = settings.GEMINI_VISION_MODEL if hasattr(settings, 'GEMINI_VISION_MODEL') else 'gemini-2.0-flash'
 _FAST_MODEL   = settings.GEMINI_MODEL  # gemini-3.1-flash-lite for cheap tasks
 
 
@@ -46,31 +46,8 @@ async def extract_business_card(image_bytes: bytes, mime_type='image/jpeg') -> d
 
 
 async def draft_email(contact: dict, user_instruction: str, user_name: str | None = None) -> dict:
-    name    = contact.get('name') or 'there'
-    company = contact.get('company') or ''
-    role    = contact.get('role') or ''
-    to_line = name
-    if role and company:
-        to_line = f'{name} ({role} at {company})'
-    elif company:
-        to_line = f'{name} ({company})'
-    first_name = name.split()[0] if name != 'there' else 'there'
-
-    prompt = f'''You are drafting a professional business email on behalf of {user_name or 'the sender'}.
-
-Recipient: {to_line}
-Instruction from sender: {user_instruction}
-
-Rules:
-- Address the recipient by first name only (e.g. "Dear {first_name},")
-- Keep the body concise and focused ONLY on what the instruction says — do not add unrelated content
-- Use a professional but warm tone
-- Sign off with "Best regards,\\n{user_name or ''}"
-- Plain text only, no markdown
-
-Return ONLY valid JSON with exactly two keys: "subject" and "body".'''
-
-    data = _extract_json(await _generate(prompt, temperature=0.2))
+    prompt = f'''Draft a concise professional plain-text email. Return ONLY JSON with keys subject and body.\nSender: {user_name or 'the user'}\nContact: {json.dumps(contact)}\nInstruction: {user_instruction}'''
+    data = _extract_json(await _generate(prompt, temperature=0.3))
     subject = str(data.get('subject') or '').strip()[:500]
     body = str(data.get('body') or '').strip()
     if not subject or not body:
@@ -151,73 +128,36 @@ async def generate_mom(transcript: str, meeting_title: str | None = None) -> dic
     }
 
 
-async def _reason_about_message(message: str, history: list[dict], context: dict) -> str:
-    """Step 1: Free-form reasoning pass. Figures out what the user ACTUALLY means before we produce JSON."""
-    recent = history[-6:] if history else []
-    hist_text = ""
-    for m in recent:
-        role = "User" if m.get("role") == "user" else "Tiby"
-        hist_text += f"{role}: {m.get('content', '')}\n"
-
-    reasoning_prompt = f'''You are analyzing a conversation to understand what the user ACTUALLY means.
-
-Recent conversation:
-{hist_text}
-User just said: "{message}"
-
-Answer these questions briefly (2-3 sentences total):
-1. Is this a NEW request or a FOLLOW-UP/CLARIFICATION to the previous message? (Look for words like "then", "also", "but", "so", "he", "she", "it", "that")
-2. If follow-up: what is the user adding or correcting from their last message?
-3. What does the user actually want right now, in plain English?
-
-Be specific. Do not produce JSON.'''
-
-    try:
-        model = genai.GenerativeModel(_AGENT_MODEL)
-        resp = await asyncio.to_thread(
-            model.generate_content, reasoning_prompt,
-            generation_config={'temperature': 0.1, 'max_output_tokens': 300}
-        )
-        return getattr(resp, 'text', '') or ''
-    except Exception:
-        return ''
-
-
 async def plan_agent(message: str, history: list[dict], context: dict) -> AgentPlan:
     schema = AgentPlan.model_json_schema()
-
-    # ── Step 1: Reason first, act second ──────────────────────────────────────
-    reasoning = await _reason_about_message(message, history, context)
-
-    # ── Step 2: Produce action JSON informed by the reasoning ─────────────────
     prompt = f'''You are Tiby, a smart AI personal assistant with access to Google Search.
 Today's date is {_date.today().isoformat()}.
 Return ONLY valid JSON matching this schema:\n{json.dumps(schema)}
 
-Allowed action types: navigate, add_task, complete_task, add_contact, update_contact, call_contact, whatsapp_contact, email_contact.
+Allowed action types: navigate, add_task, complete_task, add_contact, update_contact, call_contact, whatsapp_contact, email_contact, export_contacts.
 Allowed navigation routes: /scan, /meetings, /contacts, /analytics, /settings.
 
-══ YOUR REASONING (trust this — you already worked this out) ══
-{reasoning}
-
-══ RULES ══
-- You have Google Search — use it for current events, prices, weather, facts, real-time info. Search before answering such questions.
+RULES:
+- You have Google Search available — use it automatically when the user asks about current events, news, prices, weather, facts, or anything requiring up-to-date information. Search first, then answer based on results.
 - Never claim an action succeeded unless you include the action so the server can execute it.
-- For questions, advice, chat — answer fully in reply with NO actions. Be direct and actually helpful.
-- Only add tasks when user explicitly says "add task", "remind me", "create a task".
+- For questions, advice, planning, or general chat — answer fully in the reply field with NO actions.
+- For trip planning, travel, recommendations — search the web and give a detailed helpful answer in reply.
+- Only add tasks when the user explicitly says "add task", "remind me", "create a task", or similar.
 - Use add_contact when user says "add contact", "save contact", or gives contact details explicitly.
 - Use update_contact when user wants to update a field on an EXISTING contact. Set text to the contact name.
 - Use call_contact when user says "call [name]" or "ring [name]". Set contact_name to the person's name.
-- Use whatsapp_contact when user says "whatsapp [name]", "message [name] on whatsapp". Set contact_name and optionally message.
-- Use email_contact when: user says "email [name]", "write a mail to [name/email]", "draft a mail to", "compose an email", OR confirms a pending email ("do it", "send it", "go ahead", "yes") — look back in history for recipient. Also when a clarification changes email content (re-draft with same recipient + updated instruction). Set message to the COMPLETE instruction including all clarifications from history.
-- CRITICAL: You CANNOT send emails. The system generates a button the user taps to open their mail client. NEVER say "I have sent the email". Always say "I've drafted that — tap the button to open it in your mail app."
-- NEVER create a new contact if one already exists — use update_contact.
+- Use whatsapp_contact when user says "whatsapp [name]", "message [name] on whatsapp", or "send [name] a message". Set contact_name and optionally message.
+- Use email_contact when user says "email [name]" or "send [name] an email".
+- Use export_contacts when user says "export contacts", "download contacts", "contacts to excel", "contacts to CSV", or similar. Set contact_name and optionally title (subject) and message (body).
+- NEVER create a new contact if one already exists with the same name — use update_contact instead.
+- When asked about a contact's details, check context carefully — phone, email, company, role are ALL provided.
+- Only navigate when the user explicitly asks to go somewhere in the app.
 - Never invent urgency, deadlines, or priorities not mentioned by the user.
-- Be concise, warm, and genuinely useful. Don't pad replies.
+- Be conversational, warm, and genuinely helpful.
 
-User context: {json.dumps(context, default=str)[:10000]}
-Conversation history: {json.dumps(history[-20:], default=str)[:18000]}
-Current user message: {message}'''
+User context: {json.dumps(context, default=str)[:12000]}
+Conversation: {json.dumps(history[-20:], default=str)[:20000]}
+User message: {message}'''
 
     # Use gemini-2.0-flash with Google Search grounding
     try:
@@ -229,14 +169,14 @@ Current user message: {message}'''
             model.generate_content,
             prompt,
             tools=[google_search_tool],
-            generation_config={'temperature': 0.2, 'max_output_tokens': 2000},
+            generation_config={'temperature': 0.3, 'max_output_tokens': 2000},
         )
         raw = getattr(response, 'text', '') or ''
         if not raw.strip():
             raise ValueError('Empty agent response')
     except Exception:
-        # Fallback: same model, just without Search grounding
-        raw = await _generate(prompt, _AGENT_MODEL, temperature=0.2)
+        # Fallback to fast model without search if grounding fails
+        raw = await _generate(prompt, _FAST_MODEL, temperature=0.3)
 
     try:
         plan = AgentPlan.model_validate(_extract_json(raw))
