@@ -17,3 +17,4 @@ class ConfirmContactRequest(BaseModel):
     image_path: str | None = None
     image_url: str | None = None
     edits: dict = {}
+    category: str | None = None
