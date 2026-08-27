@@ -12,6 +12,7 @@ class AgentAction(BaseModel):
         'navigate', 'add_task', 'complete_task',
         'add_contact', 'update_contact',
         'call_contact', 'whatsapp_contact', 'email_contact',
+        'export_contacts',
     ]
     route: str | None = None
     # task fields
