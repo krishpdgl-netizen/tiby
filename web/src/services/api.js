@@ -42,13 +42,14 @@ export const bustCache = _bust
 export const agentChat           = (message, history = []) => api.post('/agent/chat', { message, history })
 
 export const scanCard            = imageFile => { const f = new FormData(); f.append('file', imageFile); return api.post('/contacts/scan-card', f) }
-export const confirmContact      = async (extracted, imagePath, edits = {}) => {
-  const r = await api.post('/contacts/confirm', { extracted, image_path: imagePath, edits })
+export const confirmContact      = async (extracted, imagePath, edits = {}, category = null) => {
+  const r = await api.post('/contacts/confirm', { extracted, image_path: imagePath, edits, category })
   _bust('contacts'); return r
 }
 export const listContacts        = () => _cached('contacts', () => api.get('/contacts/'), _TTL.contacts)
 export const getContact          = id => api.get(`/contacts/${id}`)
 export const updateContact       = async (id, data) => { const r = await api.patch(`/contacts/${id}`, data); _bust('contacts'); return r }
+export const exportContacts      = () => api.get('/contacts/export/csv', { responseType: 'blob' })
 export const deleteContact       = async id => { const r = await api.delete(`/contacts/${id}`); _bust('contacts'); return r }
 
 export const draftEmail          = (contactId, voiceInstruction) => api.post('/emails/draft', { contact_id: contactId, voice_instruction: voiceInstruction })
