@@ -25,6 +25,7 @@ class ContactUpdate(BaseModel):
     website: str | None = None
     address: str | None = None
     notes: str | None = None
+    category: str | None = None
 
 log = logging.getLogger("tiby")
 router = APIRouter(prefix="/contacts", tags=["contacts"])
@@ -192,6 +193,7 @@ async def update_contact(contact_id: uuid.UUID, req: ContactUpdate, user: Curren
     if req.website is not None: c.website = req.website
     if req.address is not None: c.address = req.address
     if req.notes is not None: c.notes = req.notes
+    if req.category is not None: c.category = req.category
     await db.commit()
     await db.refresh(c)
     return {"success": True, "contact": _ser(c)}
@@ -213,6 +215,31 @@ async def delete_contact(
     return {"success": True}
 
 
+
+@router.get("/export/csv")
+async def export_csv(user: CurrentUser, db: AsyncSession = Depends(get_db)):
+    """Export all contacts as CSV."""
+    import csv, io
+    from fastapi.responses import StreamingResponse
+    q = await db.execute(select(Contact).where(Contact.user_id == user.id).order_by(Contact.created_at.desc()))
+    contacts = q.scalars().all()
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(['Name', 'Email', 'Phone', 'Company', 'Role', 'Category', 'Website', 'Address', 'Notes', 'Added On'])
+    for c in contacts:
+        writer.writerow([
+            c.name or '', c.email or '', c.phone or '', c.company or '',
+            c.role or '', c.category or '', c.website or '', c.address or '',
+            c.notes or '', c.created_at.strftime('%Y-%m-%d'),
+        ])
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type='text/csv',
+        headers={'Content-Disposition': 'attachment; filename="tiby-contacts.csv"'}
+    )
+
+
 def _ser(c: Contact) -> dict:
     return {
         "id": str(c.id),
@@ -224,6 +251,7 @@ def _ser(c: Contact) -> dict:
         "website": c.website,
         "address": c.address,
         "notes": c.notes,
+        "category": c.category,
         "card_image_path": c.card_image_path,
         "created_at": c.created_at.isoformat(),
     }
