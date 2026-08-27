@@ -1,8 +1,17 @@
 import { useState, useEffect } from 'react'
-import { listContacts, deleteContact, confirmContact, getFollowups } from '../services/api'
+import { listContacts, deleteContact, confirmContact, getFollowups, updateContact, exportContacts } from '../services/api'
 
 const COLORS = ['ti-amber', 'ti-blue', 'ti-green', 'ti-purple', 'ti-red']
-const EMPTY_FORM = { name: '', email: '', phone: '', company: '', role: '' }
+const EMPTY_FORM = { name: '', email: '', phone: '', company: '', role: '', category: '' }
+
+const CATEGORIES = [
+  'Friends (old customers)',
+  'China OEM 2026',
+  'OEM Bulk Customers 2026',
+  'Consultants / Service Provider (Insurance, Funding, Governing, Rating, Testing Lab)',
+  'Supplier / Service',
+  'Others',
+]
 
 function ActionButtons({ contact, compact = false }) {
   const phone = contact.phone?.replace(/\D/g, '')
@@ -44,7 +53,7 @@ function ActionButtons({ contact, compact = false }) {
       )}
       {waUrl && (
         <a href={waUrl} target="_blank" rel="noopener noreferrer"
-          className="t-btn" style={{ flex: 1, textDecoration: 'none', display: 'flex', justifyContent: 'center', background: '#25d366', color: '#fff', border: 'none' }}>
+          className="t-btn" style={{ flex: 1, textDecoration: 'none', display: 'flex', justifyContent: 'center', background: '#25d366', color: '#fff', border: 'none', borderRadius: 10, padding: '10px 0', fontSize: 13, fontWeight: 600, alignItems: 'center', gap: 6, cursor: 'pointer' }}>
           💬 WhatsApp
         </a>
       )}
@@ -58,29 +67,102 @@ function ActionButtons({ contact, compact = false }) {
   )
 }
 
+function EditContactForm({ contact, onSave, onCancel }) {
+  const [form, setForm] = useState({
+    name:     contact.name     || '',
+    email:    contact.email    || '',
+    phone:    contact.phone    || '',
+    company:  contact.company  || '',
+    role:     contact.role     || '',
+    website:  contact.website  || '',
+    notes:    contact.notes    || '',
+    category: contact.category || '',
+  })
+  const [saving, setSaving] = useState(false)
+  const [err, setErr]       = useState('')
+
+  async function handleSave(e) {
+    e.preventDefault()
+    if (!form.name.trim()) { setErr('Name is required'); return }
+    setSaving(true); setErr('')
+    try {
+      const { data } = await updateContact(contact.id, form)
+      onSave(data.contact)
+    } catch (ex) {
+      setErr(ex?.response?.data?.detail || 'Failed to save')
+    } finally { setSaving(false) }
+  }
+
+  return (
+    <form onSubmit={handleSave} style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
+      {[
+        ['Full name *', 'name',    'text',  'Name'],
+        ['Email',       'email',   'email', 'email@example.com'],
+        ['Phone',       'phone',   'tel',   '+91 98765 43210'],
+        ['Company',     'company', 'text',  'Company'],
+        ['Role',        'role',    'text',  'Role'],
+        ['Website',     'website', 'url',   'https://...'],
+        ['Notes',       'notes',   'text',  'Notes'],
+      ].map(([label, key, type, ph]) => (
+        <div key={key}>
+          <label style={{ fontSize: 11, fontWeight: 600, color: '#6b7280', display: 'block', marginBottom: 3, textTransform: 'uppercase', letterSpacing: '.3px' }}>{label}</label>
+          <input className="t-input" type={type} placeholder={ph}
+            value={form[key]} onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))} />
+        </div>
+      ))}
+      <div>
+        <label style={{ fontSize: 11, fontWeight: 600, color: '#6b7280', display: 'block', marginBottom: 3, textTransform: 'uppercase', letterSpacing: '.3px' }}>Category</label>
+        <select className="t-input" value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))}>
+          <option value="">No category</option>
+          {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+      </div>
+      {err && <p style={{ color: '#991b1b', fontSize: 12.5, margin: 0 }}>{err}</p>}
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button type="button" className="t-btn t-btn-ghost" style={{ flex: 1 }} onClick={onCancel}>Cancel</button>
+        <button type="submit" className="t-btn t-btn-primary" style={{ flex: 2, marginTop: 0 }} disabled={saving}>
+          {saving ? 'Saving…' : 'Save changes'}
+        </button>
+      </div>
+    </form>
+  )
+}
+
 export default function ContactsPage() {
-  const [contacts, setContacts]         = useState([])
-  const [filtered, setFiltered]         = useState([])
-  const [search, setSearch]             = useState('')
-  const [loading, setLoading]           = useState(true)
-  const [selectedId, setSelectedId]     = useState(null)
-  const [showForm, setShowForm]         = useState(false)
-  const [form, setForm]                 = useState(EMPTY_FORM)
-  const [saving, setSaving]             = useState(false)
-  const [formErr, setFormErr]           = useState('')
-  const [followups, setFollowups]       = useState([])
+  const [contacts, setContacts]           = useState([])
+  const [filtered, setFiltered]           = useState([])
+  const [search, setSearch]               = useState('')
+  const [loading, setLoading]             = useState(true)
+  const [selectedId, setSelectedId]       = useState(null)
+  const [editingId, setEditingId]         = useState(null)
+  const [showForm, setShowForm]           = useState(false)
+  const [form, setForm]                   = useState(EMPTY_FORM)
+  const [saving, setSaving]               = useState(false)
+  const [formErr, setFormErr]             = useState('')
+  const [followups, setFollowups]         = useState([])
   const [showFollowups, setShowFollowups] = useState(true)
+  const [categoryFilter, setCategoryFilter] = useState('')
 
   useEffect(() => { load() }, [])
 
   useEffect(() => {
     const q = search.toLowerCase()
+    const base = categoryFilter ? contacts.filter(c => c.category === categoryFilter) : contacts
     setFiltered(q
-      ? contacts.filter(c => `${c.name || ''}${c.email || ''}${c.company || ''}`.toLowerCase().includes(q))
-      : contacts
+      ? base.filter(c => `${c.name || ''}${c.email || ''}${c.company || ''}`.toLowerCase().includes(q))
+      : base
     )
     setSelectedId(null)
-  }, [search, contacts])
+  }, [search, contacts, categoryFilter])
+
+  async function handleExportCSV() {
+    try {
+      const res = await exportContacts()
+      const url = URL.createObjectURL(new Blob([res.data], { type: 'text/csv' }))
+      const a = document.createElement('a'); a.href = url; a.download = 'tiby-contacts.csv'
+      document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(url); document.body.removeChild(a) }, 100)
+    } catch { alert('Export failed') }
+  }
 
   async function load() {
     setLoading(true)
@@ -119,6 +201,11 @@ export default function ContactsPage() {
     } finally { setSaving(false) }
   }
 
+  function handleEditSave(updatedContact) {
+    setContacts(prev => prev.map(c => c.id === updatedContact.id ? updatedContact : c))
+    setEditingId(null)
+  }
+
   function initials(name) {
     if (!name) return '?'
     return name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
@@ -145,6 +232,7 @@ export default function ContactsPage() {
         <button className="t-btn t-btn-primary"
           style={{ marginTop: 0, width: 'auto', padding: '0 14px', height: 42, flexShrink: 0 }}
           onClick={() => { setShowForm(s => !s); setFormErr('') }}>
+
           <i className={`ti ${showForm ? 'ti-x' : 'ti-plus'}`} aria-hidden="true" />
           {showForm ? 'Cancel' : 'Add'}
         </button>
@@ -171,6 +259,13 @@ export default function ContactsPage() {
                   value={form[key]} onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))} />
               </div>
             ))}
+            <div>
+              <label style={{ fontSize: 11, fontWeight: 600, color: '#6b7280', display: 'block', marginBottom: 3, textTransform: 'uppercase', letterSpacing: '.3px' }}>Category</label>
+              <select className="t-input" value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))}>
+                <option value="">Select category…</option>
+                {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
             {formErr && <p style={{ color: '#991b1b', fontSize: 12.5, margin: 0 }}>{formErr}</p>}
             <button type="submit" className="t-btn t-btn-primary" disabled={saving}>
               {saving ? 'Saving…' : 'Save contact'}
@@ -218,11 +313,25 @@ export default function ContactsPage() {
         </div>
       ) : (
         <>
-          <div style={{ fontSize: 12, color: '#9ca3af', paddingLeft: 2 }}>
-            {filtered.length} contact{filtered.length !== 1 ? 's' : ''}
+          {/* Category filter */}
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <button onClick={() => setCategoryFilter('')} style={{ padding: '5px 12px', borderRadius: 20, border: '1px solid #e5e5e4', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit', background: !categoryFilter ? '#1a1a1a' : '#fff', color: !categoryFilter ? '#fff' : '#6b7280', fontWeight: 500 }}>All</button>
+            {CATEGORIES.map(cat => (
+              <button key={cat} onClick={() => setCategoryFilter(cat === categoryFilter ? '' : cat)} style={{ padding: '5px 12px', borderRadius: 20, border: '1px solid #e5e5e4', fontSize: 11.5, cursor: 'pointer', fontFamily: 'inherit', background: categoryFilter === cat ? '#1a1a1a' : '#fff', color: categoryFilter === cat ? '#fff' : '#6b7280', fontWeight: 500, maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {cat}
+              </button>
+            ))}
           </div>
 
-          {/* Organisation groups */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ fontSize: 12, color: '#9ca3af', paddingLeft: 2 }}>
+              {filtered.length} contact{filtered.length !== 1 ? 's' : ''}
+            </div>
+            <button onClick={handleExportCSV} style={{ background: 'none', border: '1px solid #e5e5e4', borderRadius: 8, padding: '5px 12px', fontSize: 12, cursor: 'pointer', color: '#6b7280', fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 5 }}>
+              <i className="ti ti-download" style={{ fontSize: 13 }} aria-hidden="true" /> Export CSV
+            </button>
+          </div>
+
           {!search && Object.entries(orgs).filter(([, c]) => c.length > 1).length > 0 && (
             <div className="t-card" style={{ padding: '12px 16px' }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '.4px', marginBottom: 10 }}>Organisations</div>
@@ -246,7 +355,6 @@ export default function ContactsPage() {
             </div>
           )}
 
-          {/* Contact list */}
           <div className="t-card" style={{ padding: '4px 14px' }}>
             {filtered.map((c, i) => (
               <div key={c.id} className="t-row" onClick={() => setSelectedId(selectedId === c.id ? null : c.id)} style={{ cursor: 'pointer' }}>
@@ -254,7 +362,7 @@ export default function ContactsPage() {
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div className="t-row-name" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name || 'Unknown'}</div>
                   <div className="t-row-sub" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {[c.company, c.role].filter(Boolean).join(' · ') || c.email || 'No details'}
+                    {[c.category, c.company, c.role].filter(Boolean).join(' · ') || c.email || 'No details'}
                   </div>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -278,23 +386,40 @@ export default function ContactsPage() {
                 <div className="t-row-av ti-blue" style={{ width: 40, height: 40, borderRadius: 10, fontSize: 14 }}>
                   {initials(selectedContact.name)}
                 </div>
-                <div>
+                <div style={{ flex: 1 }}>
                   <div className="t-ct">{selectedContact.name || 'Unknown'}</div>
                   <div className="t-cs">{selectedContact.role || selectedContact.company || ''}</div>
                 </div>
+                <button onClick={e => { e.stopPropagation(); setEditingId(editingId === selectedContact.id ? null : selectedContact.id) }}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6b7280', fontSize: 16, padding: 4 }}
+                  title="Edit contact">
+                  <i className={`ti ${editingId === selectedContact.id ? 'ti-x' : 'ti-edit'}`} aria-hidden="true" />
+                </button>
               </div>
-              {[
-                ['Company', selectedContact.company],
-                ['Email',   selectedContact.email],
-                ['Phone',   selectedContact.phone],
-                ['Website', selectedContact.website],
-              ].filter(([, v]) => v).map(([l, v]) => (
-                <div key={l} style={{ display: 'flex', gap: 10, padding: '6px 0', borderBottom: '1px solid #f0f0ef', fontSize: 13 }}>
-                  <span style={{ color: '#9ca3af', minWidth: 60 }}>{l}</span>
-                  <span style={{ color: '#1a1a1a' }}>{v}</span>
-                </div>
-              ))}
-              <ActionButtons contact={selectedContact} />
+
+              {editingId === selectedContact.id ? (
+                <EditContactForm
+                  contact={selectedContact}
+                  onSave={handleEditSave}
+                  onCancel={() => setEditingId(null)}
+                />
+              ) : (
+                <>
+                  {[
+                    ['Company', selectedContact.company],
+                    ['Email',   selectedContact.email],
+                    ['Phone',   selectedContact.phone],
+                    ['Website', selectedContact.website],
+                    ['Notes',   selectedContact.notes],
+                  ].filter(([, v]) => v).map(([l, v]) => (
+                    <div key={l} style={{ display: 'flex', gap: 10, padding: '6px 0', borderBottom: '1px solid #f0f0ef', fontSize: 13 }}>
+                      <span style={{ color: '#9ca3af', minWidth: 60 }}>{l}</span>
+                      <span style={{ color: '#1a1a1a' }}>{v}</span>
+                    </div>
+                  ))}
+                  <ActionButtons contact={selectedContact} />
+                </>
+              )}
             </div>
           )}
         </>
